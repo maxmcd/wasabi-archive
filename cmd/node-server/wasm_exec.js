@@ -44,6 +44,10 @@ global.TextDecoder = util.TextDecoder;
 const encoder = new TextEncoder("utf-8");
 const decoder = new TextDecoder("utf-8");
 
+global.fetch = require('node-fetch');
+global.Headers = fetch.Headers
+
+console.log(global.fetch)
 global.Go = class {
 	constructor() {
 		this.argv = ["js"];
@@ -221,7 +225,7 @@ global.Go = class {
 
 				// func valueGet(v ref, p string) ref
 				"syscall/js.valueGet": (sp) => {
-					console.log('valueGet.key', loadString(sp + 16))
+					// console.log('valueGet.key', loadString(sp + 16))
 					// console.log('obj', loadValue(sp + 8))
 					
 					storeValue(sp + 32, Reflect.get(loadValue(sp + 8), loadString(sp + 16)));
@@ -244,7 +248,7 @@ global.Go = class {
 
 				// func valueCall(v ref, m string, args []ref) (ref, bool)
 				"syscall/js.valueCall": (sp) => {
-					console.log('valueCall.key', loadString(sp + 16))
+					// console.log('valueCall.key', loadString(sp + 16))
 					try {
 						const v = loadValue(sp + 8);
 						const m = Reflect.get(v, loadString(sp + 16));
@@ -259,6 +263,7 @@ global.Go = class {
 
 				// func valueInvoke(v ref, args []ref) (ref, bool)
 				"syscall/js.valueInvoke": (sp) => {
+					// console.log('valueInvoke.key', loadString(sp + 16))
 					try {
 						const v = loadValue(sp + 8);
 						const args = loadSliceOfValues(sp + 16);

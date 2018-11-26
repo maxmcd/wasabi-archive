@@ -1,4 +1,4 @@
-package wasmhttp
+package wasmjshttp
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 var handlers []http.Handler
 
 func init() {
-	js.Global().Set("__wasmhttp_request", js.NewCallback(request))
+	js.Global().Set("__wasmjshttp_request", js.NewCallback(request))
 }
 
 // ListenAndServe will serve an http handler

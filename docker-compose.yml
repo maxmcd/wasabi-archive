@@ -1,11 +1,14 @@
-version: '3.3'
+# we need memory limits, they're only available in 2.*
+version: '2'
 
 services:
-  app:
+  node:
     build: 
       context: .
-      dockerfile: Dockerfile
-    volumes:
-     - ./:/opt
+      dockerfile: ./cmd/node-server/Dockerfile
     ports: 
       - 8080:8080
+    mem_limit: 128m
+    volumes: 
+      - ./cmd/node-server/:/opt/
+    command: node --max_old_space_size=80 lib.js

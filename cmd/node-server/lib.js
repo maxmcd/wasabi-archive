@@ -30,6 +30,8 @@ WebAssembly.instantiate(
                 go._inst.exports.run();
             }
         });
+        // const memory = new WebAssembly.Memory({maximum: 1000})
+        // result.instance.exports.mem = memory
         return go.run(result.instance);
     })
     .catch(err => {
