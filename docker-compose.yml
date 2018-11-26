@@ -12,3 +12,11 @@ services:
     volumes: 
       - ./cmd/node-server/:/opt/
     command: node --max_old_space_size=80 lib.js
+  life:
+    build:
+      context: .
+      dockerfile: ./cmd/go-server/Dockerfile
+    ports:
+      - 8080:8080
+    volumes:
+      - ./cmd/:/opt/
