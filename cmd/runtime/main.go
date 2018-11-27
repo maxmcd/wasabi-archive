@@ -89,6 +89,15 @@ func setInt64(mem []byte, addr int64, in int64) int32 {
 	return 0
 }
 
+func setInt32(mem []byte, addr int64, in int32) int32 {
+	buf := writeInt(in)
+	_, err := buf.Read(mem[addr : addr+8])
+	if err != nil {
+		panic(err)
+	}
+	return 0
+}
+
 func loadString(mem []byte, addr int64) string {
 	saddr := getInt64(mem, addr+0)
 	ln := getInt64(mem, addr+8)
@@ -115,6 +124,17 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 				fmt.Println("valueGet key: ", loadString(vm.Memory, sp+16))
 				return 0
 			}
+		case "syscall/wasm.getRandomData":
+			return func(vm *exec.VirtualMachine) int64 {
+				sp := vm.GetCurrentFrame().Locals[0]
+				addr := getInt64(vm.Memory, sp+8)
+				ln := getInt32(vm.Memory, sp+16)
+				_, err := rand.Read(vm.Memory[addr : addr+int64(ln)])
+				if err != nil {
+					panic(err)
+				}
+				return 0
+			}
 		case "runtime.getRandomData":
 			return func(vm *exec.VirtualMachine) int64 {
 				sp := vm.GetCurrentFrame().Locals[0]
@@ -124,6 +144,16 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 				if err != nil {
 					panic(err)
 				}
+				return 0
+			}
+		case "runtime.walltime":
+			return func(vm *exec.VirtualMachine) int64 {
+				sp := vm.GetCurrentFrame().Locals[0]
+				now := time.Now()
+				sec := now.Unix()
+				nsec := int32(now.UnixNano() - sec*1000000000)
+				setInt64(vm.Memory, sp+8, sec)
+				setInt32(vm.Memory, sp+16, nsec)
 				return 0
 			}
 		case "runtime.wasmExit":
@@ -139,6 +169,15 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 			return func(vm *exec.VirtualMachine) int64 {
 				sp := vm.GetCurrentFrame().Locals[0]
 				setInt64(vm.Memory, sp+8, time.Now().UnixNano())
+				return 0
+			}
+		case "syscall.wasmWrite":
+			return func(vm *exec.VirtualMachine) int64 {
+				sp := vm.GetCurrentFrame().Locals[0]
+				_ = getInt64(vm.Memory, sp+8) // file descriptor
+				addr := getInt64(vm.Memory, sp+16)
+				ln := getInt32(vm.Memory, sp+24)
+				fmt.Print(string(vm.Memory[addr : addr+int64(ln)]))
 				return 0
 			}
 		case "runtime.wasmWrite":
