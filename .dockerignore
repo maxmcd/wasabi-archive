@@ -1,3 +1,5 @@
 *.wasm
 *Dockerfile
 .DS_Store
+/go/.git
+*.git
