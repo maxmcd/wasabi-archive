@@ -39,9 +39,17 @@ func main() {
 	}
 	code, ok := vm.GetFunctionExport("run")
 	if ok != true {
-		log.Fatal("no run function")
+		log.Println("no run function")
+		code, ok = vm.GetFunctionExport("main")
+		if ok != true {
+			log.Println("no main function")
+		}
+		vm.Run(code)
+		return
 	}
+
 	fmt.Println(vm.FunctionCode[code].NumParams)
+
 	vm.Run(code, 0, 0)
 	// vm.FunctionCode[0].
 }
@@ -195,8 +203,24 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 				return 0
 			}
 		}
+	case "env":
+		switch field {
+		case "println":
+			return func(vm *exec.VirtualMachine) int64 {
+				addr := vm.GetCurrentFrame().Locals[0]
+				ln := vm.GetCurrentFrame().Locals[1]
+				log.Print(string(vm.Memory[addr : addr+ln]))
+				return 0
+			}
+		default:
+			panic("no")
+		}
 	default:
-		panic(fmt.Errorf("unknown module: %s", module))
+		fmt.Printf("unknown module: %s\n", module)
+		return func(vm *exec.VirtualMachine) int64 {
+			log.Println("func called", module, field)
+			return 0
+		}
 	}
 }
 

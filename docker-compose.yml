@@ -20,3 +20,18 @@ services:
       - 8080:8080
     volumes:
       - ./cmd/:/opt/
+  go:
+    build:
+      context: ./pkg/go/
+      dockerfile: ./Dockerfile
+    image: maxmcd/wasm-servers:go
+  go-print:
+    build:
+      context: ./cmd
+      dockerfile: ./go-print/Dockerfile
+    image: maxmcd/wasm-servers:go-print
+  rust-basic:
+    build:
+      context: ./cmd
+      dockerfile: ./rust-basic/Dockerfile
+    image: maxmcd/wasm-servers:rust-basic
