@@ -1,4 +1,0 @@
-[submodule "go"]
-	path = go
-	url = git@github.com:maxmcd/go.git
-	branch = wasm-scratch
