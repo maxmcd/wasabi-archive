@@ -16,6 +16,11 @@ jobs:
           command: |
             docker-compose build runtime
       - run:
+          name: build go-wasm-lib
+          command: |
+            docker-compose build go-wasm-lib
+            docker-compose run go-wasm-lib
+      - run:
           name: build go-print
           command: |
             docker-compose build go-print

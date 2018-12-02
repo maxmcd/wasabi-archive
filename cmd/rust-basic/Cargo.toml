@@ -19,3 +19,7 @@ wee_alloc = { version = "0.4.2", optional = true }
 [profile.release]
 # Tell `rustc` to optimize for small code size.
 opt-level = "s"
+
+
+[features]
+wasm_syscall = []
