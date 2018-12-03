@@ -8,7 +8,6 @@ TEXT ·getRandomData(SB), NOSPLIT, $0
     CallImport
     RET
 
-
 TEXT ·write(SB), NOSPLIT, $0
     CallImport
     RET
@@ -37,7 +36,22 @@ TEXT ·valuePrepareString(SB), NOSPLIT, $0
     CallImport
     RET
 
-
 TEXT ·lookupAddr(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·lookupCNAME(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·lookupHost(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·lookupPort(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·lookupTXT(SB), NOSPLIT, $0
     CallImport
     RET

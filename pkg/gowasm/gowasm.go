@@ -91,6 +91,65 @@ func LookupAddr(addr string) (names []string, err error) {
 	return
 }
 
+func lookupCNAME(addr string) (ref int32, err bool)
+
+func LookupCNAME(addr string) (cname string, err error) {
+	ref, ok := lookupCNAME(addr)
+	if ok {
+		cname = getString(ref)
+	} else {
+		err = errors.New(getString(ref))
+	}
+	return
+}
+
+func lookupHost(host string) (ref int32, err bool)
+
+// func LookupHost(host string) (addrs []string, err error)
+func LookupHost(host string) (names []string, err error) {
+	ref, ok := lookupHost(host)
+	if ok {
+		refs := getArrayOfRefs(ref)
+		names = make([]string, len(refs))
+		for i, ref := range refs {
+			names[i] = getString(ref)
+		}
+		return
+	}
+	err = errors.New(getString(ref))
+	return
+}
+
+func lookupPort(network, service string) (port uint32, err bool, ref int32)
+
+// func LookupPort(network, service string) (port int, err error)
+func LookupPort(network, service string) (port int, err error) {
+	_port, ok, ref := lookupPort(network, service)
+	if ok {
+		port = int(_port)
+		return
+	}
+	err = errors.New(getString(ref))
+	return
+}
+
+func lookupTXT(name string) (ref int32, err bool)
+
+// func LookupTXT(name string) ([]string, error)
+func LookupTXT(addr string) (names []string, err error) {
+	ref, ok := lookupTXT(addr)
+	if ok {
+		refs := getArrayOfRefs(ref)
+		names = make([]string, len(refs))
+		for i, ref := range refs {
+			names[i] = getString(ref)
+		}
+	} else {
+		err = errors.New(getString(ref))
+	}
+	return
+}
+
 // func lookupAddr(addr string) (names []string, err error)
 // func LookupCNAME(host string) (cname string, err error)
 // func LookupHost(host string) (addrs []string, err error)

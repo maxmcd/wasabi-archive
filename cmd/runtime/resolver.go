@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/perlin-network/life/exec"
@@ -189,6 +190,7 @@ func (r *Resolver) goRuntimeWasmExit() {
 	exitCode := r.getInt32(sp + 8)
 	if exitCode != 0 {
 		log.Printf("Wasm exited with a non-zero exit code: %d\n", exitCode)
+		os.Exit(int(exitCode))
 	}
 }
 
@@ -254,9 +256,9 @@ func (r *Resolver) envPrintln() {
 
 // ResolveFunc resolverfuncs
 func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
-	log.Println("registering func", module, field)
+	fmt.Println("registering func", module, field)
 	return func(vm *exec.VirtualMachine) int64 {
-		log.Println("called func", module, field)
+		// fmt.Println("called func", module, field)
 		r.callFunc(vm, module, field)
 		return 0
 	}
@@ -264,7 +266,7 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 
 // ResolveGlobal resolverglobsals
 func (r *Resolver) ResolveGlobal(module, field string) int64 {
-	log.Println("glob", module, field)
+	fmt.Println("glob", module, field)
 	panic("we're not resolving global variables for now")
 	return 0
 }
