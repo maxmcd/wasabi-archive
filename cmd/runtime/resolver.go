@@ -134,7 +134,7 @@ func (r *Resolver) goWasmLoadBytes() {
 	ref := r.getUint32(sp + 8)
 	addr := r.getInt64(sp + 16)
 	ln := r.getInt32(sp + 24)
-	copy(vm.Memory[addr:addr+int64(ln)], r.values[int(ref)])
+	copy(r.vm.Memory[addr:addr+int64(ln)], r.values[int(ref)])
 	r.values[int(ref)] = []byte{}
 }
 
@@ -161,7 +161,7 @@ func (r *Resolver) goGowasmGetEnv() {
 }
 
 func (r *Resolver) goGowasmWrite() {
-	sp := vm.GetCurrentFrame().Locals[0]
+	sp := r.vm.GetCurrentFrame().Locals[0]
 	_ = r.getInt64(sp + 8) // file descriptor
 	fmt.Print(r.loadString(sp + 16))
 }
@@ -170,7 +170,7 @@ func (r *Resolver) goGetRandomData() {
 	sp := r.sp()
 	addr := r.getInt64(sp + 8)
 	ln := r.getInt32(sp + 16)
-	_, err := rand.Read(vm.Memory[addr : addr+int64(ln)])
+	_, err := rand.Read(r.vm.Memory[addr : addr+int64(ln)])
 	if err != nil {
 		panic(err)
 	}
@@ -251,7 +251,7 @@ func (r *Resolver) goGowasmLookupAddr() {
 func (r *Resolver) envPrintln() {
 	addr := r.vm.GetCurrentFrame().Locals[0]
 	ln := r.vm.GetCurrentFrame().Locals[1]
-	fmt.Print(string(vm.Memory[addr : addr+ln]))
+	fmt.Print(string(r.vm.Memory[addr : addr+ln]))
 }
 
 // ResolveFunc resolverfuncs

@@ -9,5 +9,5 @@ COPY ./pkg/gowasm .
 ENV GOOS=js 
 ENV GOARCH=wasm
 # CMD go test -exec="runtime" -v
-CMD go test -exec="runtime" -v 
+CMD go test -v -exec="runtime"
 
