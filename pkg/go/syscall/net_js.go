@@ -41,6 +41,40 @@ const (
 	TCP_NODELAY
 	TCP_KEEPINTVL
 	TCP_KEEPIDLE
+	SOL_SOCKET = 0x1
+	SHUT_RD    = 0x0
+	SHUT_RDWR  = 0x2
+	SHUT_WR    = 0x1
+
+	SO_TYPE
+	NET_RT_IFLIST
+	IFNAMSIZ
+	IFF_UP
+	IFF_BROADCAST
+	IFF_LOOPBACK
+	IFF_POINTOPOINT
+	IFF_MULTICAST
+	SO_BROADCAST
+	SO_REUSEADDR
+	SO_REUSEPORT
+	SO_RCVBUF
+	SO_SNDBUF
+	SO_KEEPALIVE
+	SO_LINGER
+	IP_PORTRANGE
+	IP_PORTRANGE_DEFAULT
+	IP_PORTRANGE_LOW
+	IP_PORTRANGE_HIGH
+	IP_MULTICAST_IF
+	IP_MULTICAST_LOOP
+	IP_ADD_MEMBERSHIP
+	IPV6_PORTRANGE
+	IPV6_PORTRANGE_DEFAULT
+	IPV6_PORTRANGE_LOW
+	IPV6_PORTRANGE_HIGH
+	IPV6_MULTICAST_IF
+	IPV6_MULTICAST_LOOP
+	IPV6_JOIN_GROUP
 )
 
 // Misc constants expected by package net but not supported.
@@ -50,12 +84,31 @@ const (
 	SYS_FCNTL = 500 // unsupported; same value as net_nacl.go
 )
 
+// A Sockaddr is one of the SockaddrXxx structs.
 type Sockaddr interface {
+	// copy returns a copy of the underlying data.
+	copy() Sockaddr
+
+	// key returns the value of the underlying data,
+	// for comparison as a map key.
+	key() interface{}
 }
 
 type SockaddrInet4 struct {
 	Port int
 	Addr [4]byte
+}
+
+func (sa *SockaddrInet4) copy() Sockaddr {
+	sa1 := *sa
+	return &sa1
+}
+
+func (sa *SockaddrInet4) key() interface{} { return *sa }
+
+func isIPv4Localhost(sa Sockaddr) bool {
+	sa4, ok := sa.(*SockaddrInet4)
+	return ok && sa4.Addr == [4]byte{127, 0, 0, 1}
 }
 
 type SockaddrInet6 struct {
@@ -64,9 +117,41 @@ type SockaddrInet6 struct {
 	Addr   [16]byte
 }
 
+func (sa *SockaddrInet6) copy() Sockaddr {
+	sa1 := *sa
+	return &sa1
+}
+
+func (sa *SockaddrInet6) key() interface{} { return *sa }
+
 type SockaddrUnix struct {
 	Name string
 }
+
+func (sa *SockaddrUnix) copy() Sockaddr {
+	sa1 := *sa
+	return &sa1
+}
+
+func (sa *SockaddrUnix) key() interface{} { return *sa }
+
+type SockaddrDatalink struct {
+	Len    uint8
+	Family uint8
+	Index  uint16
+	Type   uint8
+	Nlen   uint8
+	Alen   uint8
+	Slen   uint8
+	Data   [12]int8
+}
+
+func (sa *SockaddrDatalink) copy() Sockaddr {
+	sa1 := *sa
+	return &sa1
+}
+
+func (sa *SockaddrDatalink) key() interface{} { return *sa }
 
 func Socket(proto, sotype, unused int) (fd int, err error) {
 	return 0, ENOSYS
@@ -130,6 +215,79 @@ func Shutdown(fd int, how int) error {
 
 func SetNonblock(fd int, nonblocking bool) error {
 	return nil
+}
+
+func fdToNetFile(fd int) (*netFile, error) {
+	f, err := fdToFile(fd)
+	if err != nil {
+		return nil, err
+	}
+	impl := f.impl
+	netf, ok := impl.(*netFile)
+	if !ok {
+		return nil, EINVAL
+	}
+	return netf, nil
+}
+
+func Getpeername(fd int) (sa Sockaddr, err error) {
+	f, err := fdToNetFile(fd)
+	if err != nil {
+		return nil, err
+	}
+	if f.raddr == nil {
+		return nil, ENOTCONN
+	}
+	return f.raddr.copy(), nil
+}
+
+func Getsockname(fd int) (sa Sockaddr, err error) {
+	f, err := fdToNetFile(fd)
+	if err != nil {
+		return nil, err
+	}
+	if f.addr == nil {
+		return nil, ENOTCONN
+	}
+	return f.addr.copy(), nil
+}
+
+// A msgq is a queue of messages.
+type msgq struct {
+	queue
+	data []interface{}
+}
+
+func newMsgq() *msgq {
+	q := &msgq{
+		data: make([]interface{}, 32),
+	}
+	q.init(len(q.data))
+	return q
+}
+
+// A netproto contains protocol-specific functionality
+// (one for AF_INET, one for AF_INET6 and so on).
+// It is a struct instead of an interface because the
+// implementation needs no state, and I expect to
+// add some data fields at some point.
+type netproto struct {
+	bind func(*netFile, Sockaddr) error
+}
+
+// A netFile is an open network file.
+type netFile struct {
+	defaultFileImpl
+	proto      *netproto
+	sotype     int
+	listener   *msgq
+	packet     *msgq
+	rd         *byteq
+	wr         *byteq
+	rddeadline int64
+	wrdeadline int64
+	addr       Sockaddr
+	raddr      Sockaddr
 }
 
 // Interface to timers implemented in package runtime.

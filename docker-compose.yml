@@ -17,6 +17,14 @@ services:
       context: ./cmd/runtime
       dockerfile: ./Dockerfile
     image: maxmcd/wasm-servers:runtime
+  switch-bug-test-case:
+    build:
+      context: ./cmd
+      dockerfile: ./switch-bug-test-case/Dockerfile
+  switch-bug-test-case-node:
+    build:
+      context: ./cmd
+      dockerfile: ./switch-bug-test-case/node.Dockerfile
   circleci:
     build:
       context: ./cmd/circleci-runner

@@ -11,6 +11,7 @@ import (
 	"internal/poll"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -26,6 +27,30 @@ type netFD struct {
 	net         string
 	laddr       Addr
 	raddr       Addr
+
+	// from net_fake
+	incoming chan *netFD
+	listener bool
+	r        *bufferedPipe
+	w        *bufferedPipe
+}
+
+func newBufferedPipe(softLimit int) *bufferedPipe {
+	p := &bufferedPipe{softLimit: softLimit}
+	p.rCond.L = &p.mu
+	p.wCond.L = &p.mu
+	return p
+}
+
+type bufferedPipe struct {
+	softLimit int
+	mu        sync.Mutex
+	buf       []byte
+	closed    bool
+	rCond     sync.Cond
+	wCond     sync.Cond
+	rDeadline time.Time
+	wDeadline time.Time
 }
 
 func newFD(sysfd, family, sotype int, net string) (*netFD, error) {

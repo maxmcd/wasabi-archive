@@ -2,7 +2,9 @@ package gowasm
 
 import (
 	"bytes"
+	"fmt"
 	"log"
+	"net/http"
 	"testing"
 )
 
@@ -48,6 +50,11 @@ func TestLookupAddr(t *testing.T) {
 	if names[0] != "localhost" {
 		log.Fatal("localhost isn't localhost")
 	}
+}
+
+func TestHttp(t *testing.T) {
+	resp, err := http.Get("https://www.google.com")
+	fmt.Println(resp, err)
 }
 
 // Doesn't seem to work with exec...
