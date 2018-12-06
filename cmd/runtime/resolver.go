@@ -36,6 +36,7 @@ type Resolver struct {
 	envVars map[string]string
 	values  map[int][]byte
 	ffi     map[string]func(int32)
+	locals  []int32
 }
 
 func (r *Resolver) init() {
@@ -241,10 +242,9 @@ func (r *Resolver) goGowasmLookupAddr(sp int32) {
 }
 
 func (r *Resolver) envPrintln(sp int32) {
-	// addr := r.vm.GetCurrentFrame().Locals[0]
-	// ln := r.vm.GetCurrentFrame().Locals[1]
-	// fmt.Print(string(r.vm.Memory()[addr : addr+ln]))
-	fmt.Println(sp)
+	addr := r.locals[0]
+	ln := r.locals[1]
+	fmt.Println(string(r.vm.Memory()[addr : addr+ln]))
 }
 
 // // ResolveFunc resolverfuncs

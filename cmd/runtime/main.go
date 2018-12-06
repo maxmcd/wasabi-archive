@@ -87,15 +87,16 @@ func registerModule(module string, r *Resolver) *wasm.Module {
 		}
 		sig := wasm.FunctionSig{
 			Form:        0,
-			ParamTypes:  []wasm.ValueType{wasm.ValueTypeI32},
+			ParamTypes:  []wasm.ValueType{wasm.ValueTypeI32, wasm.ValueTypeI32},
 			ReturnTypes: nil,
 		}
 		m.Types.Entries = append(m.Types.Entries, sig)
 		wasmFun := wasm.Function{
 			Sig: &sig,
-			Host: reflect.ValueOf(func(proc *exec.Process, sp int32) {
-				fmt.Println("calling", methodName)
-				functionLocal(sp)
+			Host: reflect.ValueOf(func(proc *exec.Process, sp int32, sp2 int32) {
+				fmt.Println(sp, sp2)
+				r.locals = []int32{sp, sp2}
+				functionLocal(sp2)
 			}),
 			Body: &wasm.FunctionBody{},
 		}
