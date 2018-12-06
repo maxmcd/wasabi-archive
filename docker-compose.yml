@@ -2,16 +2,6 @@
 version: '2'
 
 services:
-  node:
-    build: 
-      context: .
-      dockerfile: ./cmd/node-server/Dockerfile
-    ports: 
-      - 8080:8080
-    mem_limit: 128m
-    volumes: 
-      - ./cmd/node-server/:/opt/
-    command: node --max_old_space_size=80 lib.js
   runtime:
     build:
       context: ./cmd/runtime
@@ -40,11 +30,11 @@ services:
       context: ./
       dockerfile: ./pkg/gowasm/Dockerfile
     image: maxmcd/wasm-servers:go-wasm-lib
-  go-print:
+  go-fs:
     build:
       context: ./cmd
-      dockerfile: ./go-print/Dockerfile
-    image: maxmcd/wasm-servers:go-print
+      dockerfile: ./go-fs/Dockerfile
+    image: maxmcd/wasm-servers:go-fs
   rust-basic:
     build:
       context: ./cmd/rust-basic

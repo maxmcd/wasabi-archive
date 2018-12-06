@@ -12,21 +12,12 @@ jobs:
           command: |
             docker-compose build go
       - run:
-          name: build runtime
+          name: build go-fs
           command: |
-            docker-compose build runtime
+            docker-compose build go-fs
+            docker-compose run go-fs
       - run:
           name: build gowasm
           command: |
             docker-compose build gowasm
             docker-compose run gowasm
-      - run:
-          name: build go-print
-          command: |
-            docker-compose build go-print
-            docker-compose run go-print
-      - run:
-          name: build rust-basic
-          command: |
-            docker-compose build rust-basic
-            docker-compose run rust-basic
