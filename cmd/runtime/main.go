@@ -13,6 +13,11 @@ import (
 	"github.com/go-interpreter/wagon/wasm"
 )
 
+type extrypoint struct {
+	args []uint64
+	name string
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if len(os.Args) < 2 {
@@ -31,6 +36,7 @@ func main() {
 
 	start := time.Now()
 	m, err := wasm.ReadModule(file, func(module string) (*wasm.Module, error) {
+		fmt.Println(module)
 		return registerModule(module, r), nil
 	})
 	if err != nil {
@@ -43,11 +49,26 @@ func main() {
 	r.vm = vm
 	fmt.Printf("Completed parsing bin in %s\n", time.Now().Sub(start))
 
+	eps := []extrypoint{
+		{args: []uint64{0, 0}, name: "run"},
+		{args: []uint64{}, name: "main"},
+	}
 	start = time.Now()
-	entry := m.Export.Entries["run"]
-	_, err = vm.ExecCode(int64(entry.Index), uint64(0), uint64(0))
-	if err != nil {
-		panic(err)
+	var run bool
+	for _, ep := range eps {
+		_, ok := m.Export.Entries[ep.name]
+		if ok == true {
+			run = true
+			entry := m.Export.Entries[ep.name]
+			_, err = vm.ExecCode(int64(entry.Index), ep.args...)
+			if err != nil {
+				panic(err)
+			}
+			break
+		}
+	}
+	if !run {
+		log.Fatal("Entrypoint command found")
 	}
 	fmt.Printf("Run complete %s\n", time.Now().Sub(start))
 }
