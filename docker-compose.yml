@@ -20,10 +20,17 @@ services:
       context: ./cmd/circleci-runner
       dockerfile: ./Dockerfile
     image: maxmcd/wasm-servers:circleci
+  wasmtime:
+    build:
+      context: ./cmd/wasmtime
+      dockerfile: ./Dockerfile
+    image: maxmcd/wasm-servers:wasmtime
+    volumes:
+      - ./:/opt/wasmtime
   go:
     build:
-      context: ./pkg/go/
-      dockerfile: ./Dockerfile
+      context: ./pkg/
+      dockerfile: ./go/Dockerfile
     image: maxmcd/wasm-servers:go
   gowasm:
     build:

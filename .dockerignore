@@ -4,3 +4,4 @@
 /go/.git
 *.git
 *node_modules
+cmd/wasmtime/target

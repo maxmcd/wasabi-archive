@@ -12,7 +12,7 @@ import (
 )
 
 func lookupProtocol(ctx context.Context, name string) (proto int, err error) {
-	println(name)
+	println("lookupProtocol")
 	return lookupProtocolMap(name)
 }
 
@@ -23,6 +23,7 @@ func (*Resolver) lookupHost(ctx context.Context, host string) (addrs []string, e
 
 func (*Resolver) lookupIP(ctx context.Context, host string) (addrs []IPAddr, err error) {
 	println("lookupIP")
+	// return []IPAddr{{IP: []byte{127, 0, 0, 1}}}, nil
 	return nil, syscall.ENOPROTOOPT
 }
 

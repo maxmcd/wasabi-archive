@@ -61,7 +61,7 @@ func (r *Resolver) init() {
 		"go/runtime.walltime":                                             r.goRuntimeWallTime,
 		"go/runtime.wasmExit":                                             r.goRuntimeWasmExit,
 		"go/runtime.wasmWrite":                                            r.goWasmWrite,
-		"go/syscall.Syscall":                                              r.noop,
+		"go/syscall.Syscall":                                              r.goSyscallSyscall,
 		"go/syscall.wasmWrite":                                            r.goWasmWrite,
 		"go/syscall/js.valueGet":                                          r.goSyscallJsValueGet,
 		"go/syscall/wasm.getRandomData":                                   r.goGetRandomData,
@@ -172,6 +172,11 @@ func (r *Resolver) goGetRandomData(sp int32) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func (r *Resolver) goSyscallSyscall(sp int32) {
+	something := r.getInt64(sp + 8)
+	fmt.Println(something)
 }
 
 func (r *Resolver) goRuntimeWallTime(sp int32) {

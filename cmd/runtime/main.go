@@ -39,6 +39,7 @@ func main() {
 		fmt.Println(module)
 		return registerModule(module, r), nil
 	})
+
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func registerModule(module string, r *Resolver) *wasm.Module {
 		wasmFun := wasm.Function{
 			Sig: &sig,
 			Host: reflect.ValueOf(func(proc *exec.Process, sp int32, sp2 int32) {
-				fmt.Println(sp, sp2)
+				fmt.Println("calling", methodName)
 				r.locals = []int32{sp, sp2}
 				functionLocal(sp2)
 			}),

@@ -39,3 +39,14 @@ The runtime could also be installed locally. Allowing opt-in sandboxing of exter
 - Emscripten filesytem sycall interface <br /> https://kripken.github.io/emscripten-site/docs/api_reference/Filesystem-API.html
 - Mozilla WASM compiler. (look out for soon-to-be-open-sourced fastly runtime) <br /> https://github.com/CraneStation/cranelift
 - Fastly wasm talk <br /> https://www.youtube.com/watch?v=FkM1L8-qcjU
+
+
+# Infra
+
+- User busybox and minimal linux along with firecracker. Do this to get things running until a true sandboxed vm can be created. 
+- Get Rust running and set up a nomad cluster and some services
+- Figure out cpu/memory allocations
+- Set up build and deploy system
+- Figure out request routing
+- Create a emscripten target for Go
+

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -49,6 +50,20 @@ func TestLookupAddr(t *testing.T) {
 	}
 	if names[0] != "localhost" {
 		log.Fatal("localhost isn't localhost")
+	}
+}
+
+func TestInternalHttp(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	resp, err := http.Get(s.URL)
+	if err != nil {
+		t.Error(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Error("Wrong status code", resp.StatusCode)
 	}
 }
 

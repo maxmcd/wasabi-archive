@@ -68,16 +68,19 @@ func newFD(sysfd, family, sotype int, net string) (*netFD, error) {
 }
 
 func (fd *netFD) init() error {
+	println("netfd init")
 	return fd.pfd.Init(fd.net, true)
 }
 
 func (fd *netFD) setAddr(laddr, raddr Addr) {
+	println("netfd setAddr")
 	fd.laddr = laddr
 	fd.raddr = raddr
 	runtime.SetFinalizer(fd, (*netFD).Close)
 }
 
 func (fd *netFD) name() string {
+	println("netfd name")
 	var ls, rs string
 	if fd.laddr != nil {
 		ls = fd.laddr.String()
@@ -89,6 +92,7 @@ func (fd *netFD) name() string {
 }
 
 func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (rsa syscall.Sockaddr, ret error) {
+	println("netfd connect")
 	// Do not need to call fd.writeLock here,
 	// because fd is not yet accessible to user,
 	// so no concurrent operations are possible.
@@ -205,61 +209,72 @@ func (fd *netFD) connect(ctx context.Context, la, ra syscall.Sockaddr) (rsa sysc
 }
 
 func (fd *netFD) Close() error {
+	println("netfd Close")
 	runtime.SetFinalizer(fd, nil)
 	return fd.pfd.Close()
 }
 
 func (fd *netFD) shutdown(how int) error {
+	println("netfd shutdown")
 	err := fd.pfd.Shutdown(how)
 	runtime.KeepAlive(fd)
 	return wrapSyscallError("shutdown", err)
 }
 
 func (fd *netFD) closeRead() error {
+	println("netfd closeRead")
 	return fd.shutdown(syscall.SHUT_RD)
 }
 
 func (fd *netFD) closeWrite() error {
+	println("netfd closeWrite")
 	return fd.shutdown(syscall.SHUT_WR)
 }
 
 func (fd *netFD) Read(p []byte) (n int, err error) {
+	println("netfd Read")
 	n, err = fd.pfd.Read(p)
 	runtime.KeepAlive(fd)
 	return n, wrapSyscallError("read", err)
 }
 
 func (fd *netFD) readFrom(p []byte) (n int, sa syscall.Sockaddr, err error) {
+	println("netfd readFrom")
 	n, sa, err = fd.pfd.ReadFrom(p)
 	runtime.KeepAlive(fd)
 	return n, sa, wrapSyscallError("recvfrom", err)
 }
 
 func (fd *netFD) readMsg(p []byte, oob []byte) (n, oobn, flags int, sa syscall.Sockaddr, err error) {
+	println("netfd readMsg")
 	n, oobn, flags, sa, err = fd.pfd.ReadMsg(p, oob)
 	runtime.KeepAlive(fd)
 	return n, oobn, flags, sa, wrapSyscallError("recvmsg", err)
 }
 
 func (fd *netFD) Write(p []byte) (nn int, err error) {
+	println("netfd Write")
 	nn, err = fd.pfd.Write(p)
 	runtime.KeepAlive(fd)
 	return nn, wrapSyscallError("write", err)
 }
 
 func (fd *netFD) writeTo(p []byte, sa syscall.Sockaddr) (n int, err error) {
+	println("netfd writeTo")
 	n, err = fd.pfd.WriteTo(p, sa)
 	runtime.KeepAlive(fd)
 	return n, wrapSyscallError("sendto", err)
 }
 
 func (fd *netFD) writeMsg(p []byte, oob []byte, sa syscall.Sockaddr) (n int, oobn int, err error) {
+	println("netfd writeMsg")
 	n, oobn, err = fd.pfd.WriteMsg(p, oob, sa)
 	runtime.KeepAlive(fd)
 	return n, oobn, wrapSyscallError("sendmsg", err)
 }
 
 func (fd *netFD) accept() (netfd *netFD, err error) {
+	println("netfd accept")
 	d, rsa, errcall, err := fd.pfd.Accept()
 	if err != nil {
 		if errcall != "" {
@@ -282,6 +297,7 @@ func (fd *netFD) accept() (netfd *netFD, err error) {
 }
 
 func (fd *netFD) dup() (f *os.File, err error) {
+	println("netfd dup")
 	ns, call, err := fd.pfd.Dup()
 	if err != nil {
 		if call != "" {
@@ -294,13 +310,16 @@ func (fd *netFD) dup() (f *os.File, err error) {
 }
 
 func (fd *netFD) SetDeadline(t time.Time) error {
+	println("netfd SetDeadline")
 	return fd.pfd.SetDeadline(t)
 }
 
 func (fd *netFD) SetReadDeadline(t time.Time) error {
+	println("netfd SetReadDeadline")
 	return fd.pfd.SetReadDeadline(t)
 }
 
 func (fd *netFD) SetWriteDeadline(t time.Time) error {
+	println("netfd SetWriteDeadline")
 	return fd.pfd.SetWriteDeadline(t)
 }
