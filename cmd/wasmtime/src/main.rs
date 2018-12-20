@@ -46,14 +46,15 @@ extern crate file_per_thread_logger;
 extern crate pretty_env_logger;
 extern crate wabt;
 
+mod instance_plus_plus;
+mod resolver;
+
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_codegen::{ir, isa};
-use cranelift_entity::BoxedSlice;
 use cranelift_entity::PrimaryMap;
-use cranelift_wasm::DefinedFuncIndex;
 use docopt::Docopt;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io;
@@ -61,14 +62,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
-use std::rc::Rc;
-use target_lexicon::HOST;
-use wasmtime_environ::{
-    compile_module, translate_signature, Compilation, CompileError, Module, ModuleEnvironment,
-    Tunables,
-};
-use wasmtime_execute::{link_module, ActionError, ActionOutcome, InstancePlus, JITCode, Resolver};
-use wasmtime_runtime::{Export, Imports, InstantiationError, VMContext, VMFunctionBody};
+use wasmtime_execute::{ActionOutcome, InstancePlus, JITCode, Resolver};
+use wasmtime_runtime::Export;
 
 static LOG_FILENAME_PREFIX: &str = "cranelift.dbg.";
 
@@ -95,6 +90,36 @@ struct Args {
     flag_optimize: bool,
     flag_debug: bool,
     flag_invoke: Option<String>,
+}
+
+/// An opaque reference to an `InstancePlus`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct InstancePlusIndex(u32);
+entity_impl!(InstancePlusIndex, "instance");
+
+struct WasmNamespace {
+    names: HashMap<String, InstancePlusIndex>,
+    instances: PrimaryMap<InstancePlusIndex, InstancePlus>,
+}
+
+impl WasmNamespace {
+    fn new() -> Self {
+        Self {
+            names: HashMap::new(),
+            instances: PrimaryMap::new(),
+        }
+    }
+}
+
+impl Resolver for WasmNamespace {
+    fn resolve(&mut self, module: &str, field: &str) -> Option<Export> {
+        println!("Resolving {} {}", module, field);
+        if let Some(index) = self.names.get(module) {
+            self.instances[*index].instance.lookup(field)
+        } else {
+            None
+        }
+    }
 }
 
 fn read_to_end(path: PathBuf) -> Result<Vec<u8>, io::Error> {
@@ -149,175 +174,6 @@ fn main() {
     }
 }
 
-#[allow(clippy::print_stdout)]
-unsafe extern "C" fn env_println(msg: *const u8, len: usize, vmctx: *mut VMContext) {
-    println!("{:?}", len);
-    println!("{:?}", msg.offset(1));
-    println!("{:?}", msg.offset(0));
-    let instance = (&mut *vmctx).instance();
-    let _address = match instance.lookup_immutable("memory") {
-        Some(Export::Memory {
-            address,
-            memory: _memory,
-            vmctx: _vmctx,
-        }) => address,
-        Some(_) => {
-            panic!("nomatch");
-        }
-        None => {
-            panic!("nomatch 2");
-        }
-    };
-}
-
-struct WasmNamespace {
-    instance: Option<InstancePlus>,
-}
-
-impl WasmNamespace {
-    fn new() -> Self {
-        Self { instance: None }
-    }
-}
-
-impl Resolver for WasmNamespace {
-    fn resolve(&mut self, module: &str, field: &str) -> Option<Export> {
-        println!("Resolving {} {}", module, field);
-        self.instance.as_ref().unwrap().instance.lookup(field)
-    }
-}
-
-fn init_instance(
-    jit_code: &mut JITCode,
-    isa: &isa::TargetIsa,
-    data: &[u8],
-    resolver: &mut Resolver,
-) -> Result<InstancePlus, ActionError> {
-    let call_conv = isa::CallConv::triple_default(&HOST);
-    let pointer_type = ir::types::Type::triple_pointer_type(&HOST);
-
-    let mut module = Module::new();
-
-    // TODO: Allow the tunables to be overridden.
-    let tunables = Tunables::default();
-
-    let (lazy_function_body_inputs, lazy_data_initializers) = {
-        let environ = ModuleEnvironment::new(isa, &mut module, tunables);
-
-        let translation = environ
-            .translate(&data)
-            .map_err(|error| ActionError::Compile(CompileError::Wasm(error)))
-            .unwrap();
-
-        (
-            translation.lazy.function_body_inputs,
-            translation.lazy.data_initializers,
-        )
-    };
-
-    let (compilation, relocations) = compile_module(&module, &lazy_function_body_inputs, isa)
-        .map_err(ActionError::Compile)
-        .unwrap();
-
-    let allocated_functions = allocate_functions(jit_code, compilation)
-        .map_err(|message| {
-            ActionError::Instantiate(InstantiationError::Resource(format!(
-                "failed to allocate memory for functions: {}",
-                message
-            )))
-        })
-        .unwrap();
-
-    let imports = link_module(&module, &allocated_functions, relocations, resolver)
-        .map_err(ActionError::Link)
-        .unwrap();
-
-    // Gather up the pointers to the compiled functions.
-    let mut finished_functions = allocated_functions
-        .into_iter()
-        .map(|(_index, allocated)| {
-            let fatptr: *const [VMFunctionBody] = *allocated;
-            fatptr as *const VMFunctionBody
-        })
-        .collect::<PrimaryMap<DefinedFuncIndex, *const VMFunctionBody>>();
-
-    let sig = module.signatures.push(translate_signature(
-        ir::Signature {
-            params: vec![
-                ir::AbiParam::new(ir::types::I32),
-                ir::AbiParam::new(ir::types::I32),
-            ],
-            returns: vec![],
-            call_conv,
-        },
-        pointer_type,
-    ));
-    let func = module.functions.push(sig);
-    module.exports.insert(
-        "println".to_owned(),
-        wasmtime_environ::Export::Function(func),
-    );
-    finished_functions.push(env_println as *const VMFunctionBody);
-    // Make all code compiled thus far executable.
-    jit_code.publish();
-    InstancePlus::with_parts(
-        Rc::new(module),
-        finished_functions.into_boxed_slice(),
-        imports,
-        lazy_data_initializers,
-    )
-}
-
-fn allocate_functions(
-    jit_code: &mut JITCode,
-    compilation: Compilation,
-) -> Result<PrimaryMap<DefinedFuncIndex, *mut [VMFunctionBody]>, String> {
-    let mut result = PrimaryMap::with_capacity(compilation.functions.len());
-    for (_, body) in compilation.functions.into_iter() {
-        let fatptr: *mut [VMFunctionBody] = jit_code.allocate_copy_of_byte_slice(body)?;
-        result.push(fatptr);
-    }
-    Ok(result)
-}
-
-/// Return an instance implementing the "spectest" interface used in the
-/// spec testsuite.
-pub fn instantiate_spectest() -> Result<InstancePlus, ActionError> {
-    let call_conv = isa::CallConv::triple_default(&HOST);
-    let pointer_type = ir::types::Type::triple_pointer_type(&HOST);
-    let mut module = Module::new();
-    let mut finished_functions: PrimaryMap<DefinedFuncIndex, *const VMFunctionBody> =
-        PrimaryMap::new();
-
-    let sig = module.signatures.push(translate_signature(
-        ir::Signature {
-            params: vec![
-                ir::AbiParam::new(ir::types::I32),
-                ir::AbiParam::new(ir::types::I32),
-            ],
-            returns: vec![],
-            call_conv,
-        },
-        pointer_type,
-    ));
-    let func = module.functions.push(sig);
-    module.exports.insert(
-        "println".to_owned(),
-        wasmtime_environ::Export::Function(func),
-    );
-    finished_functions.push(env_println as *const VMFunctionBody);
-
-    let imports = Imports::none();
-    let data_initializers = Vec::new();
-
-    InstancePlus::with_parts(
-        Rc::new(module),
-        finished_functions.into_boxed_slice(),
-        imports,
-        data_initializers,
-    )
-}
-
 fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String> {
     let mut data =
         read_to_end(path.to_path_buf()).map_err(|err| String::from(err.description()))?;
@@ -326,10 +182,12 @@ fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String
         data = wabt::wat2wasm(data).map_err(|err| String::from(err.description()))?;
     }
     let mut resolver = WasmNamespace::new();
+    let instance = resolver::instantiate_spectest().unwrap();
+    let index = resolver.instances.push(instance);
+    resolver.names.insert("env".to_owned(), index);
     let mut jit_code = JITCode::new();
-    let mut instance_plus =
-        init_instance(&mut jit_code, isa, &data, &mut resolver).map_err(|e| e.to_string())?;
-
+    let mut instance_plus = instance_plus_plus::new(&mut jit_code, isa, &data, &mut resolver)
+        .map_err(|e| e.to_string())?;
     if let Some(ref f) = args.flag_invoke {
         match instance_plus
             .invoke(&mut jit_code, isa, &f, &[])
