@@ -33,17 +33,15 @@ pub fn new(
         )
     };
 
-    // This is the only change from wasmtime
-    // ------------------------------------------------
     module
         .imported_memories
         .push(("env".to_owned(), "memory".to_owned()));
-    // ------------------------------------------------
 
-    let now = SystemTime::now();
+    let compilation_timer = SystemTime::now();
     let (compilation, relocations) =
         compile_module(&module, &lazy_function_body_inputs, isa).map_err(ActionError::Compile)?;
-    println!("Compile time: {:?}", now.elapsed().unwrap());
+    println!("Compile time: {:?}", compilation_timer.elapsed().unwrap());
+
     let allocated_functions = allocate_functions(jit_code, compilation).map_err(|message| {
         ActionError::Instantiate(InstantiationError::Resource(format!(
             "failed to allocate memory for functions: {}",

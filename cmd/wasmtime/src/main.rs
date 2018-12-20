@@ -1,9 +1,4 @@
-//! CLI tool to use the functions provided by the [wasmtime](../wasmtime/index.html)
-//! crate.
-//!
-//! Reads Wasm binary files (one Wasm module per file), translates the functions' code to Cranelift
-//! IL. Can also executes the `start` function of the module by laying out the memories, globals
-//! and tables, then emitting the translated code with hardcoded addresses to memory.
+//! Wasmtime is a user of wasmtime without enough creatifity to come up with a new name
 
 #![deny(
     missing_docs,
