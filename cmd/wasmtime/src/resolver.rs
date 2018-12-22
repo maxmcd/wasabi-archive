@@ -5,46 +5,115 @@ use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use std::rc::Rc;
 use std::slice;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::str;
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
 use wasmtime_execute::{ActionError, InstancePlus};
-use wasmtime_runtime::{Imports, VMContext, VMFunctionBody};
+use wasmtime_runtime::{Imports, VMContext, VMFunctionBody, VMMemoryDefinition};
+
+struct FuncContext {
+    address: *mut VMMemoryDefinition,
+}
+
+impl FuncContext {
+    fn new(vmctx: *mut VMContext) -> Self {
+        let instance = unsafe { (&mut *vmctx).instance() };
+        let address = match instance.lookup("memory") {
+            Some(wasmtime_runtime::Export::Memory {
+                address,
+                memory: _memory,
+                vmctx: _vmctx,
+            }) => (address),
+            Some(_) => {
+                panic!("can't find memory");
+            }
+            None => {
+                panic!("nomatch 2");
+            }
+        };
+        Self { address }
+    }
+
+    unsafe fn get_i32(&self, sp: u32) -> u32 {
+        let spu = sp as usize;
+        let memory_def = &*self.address;
+        as_u32_le(&slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8])
+    }
+    unsafe fn get_string(&self, sp: u32) -> &str {
+        let memory_def = &*self.address;
+        let saddr = self.get_i32(sp) as usize;
+        let ln = self.get_i32(sp + 8) as usize;
+        str::from_utf8(
+            &slice::from_raw_parts(memory_def.base, memory_def.current_length)[saddr..saddr + ln],
+        )
+        .unwrap()
+    }
+    unsafe fn set_u64(&self, sp: u32, num: u64) {
+        let memory_def = &*self.address;
+        let spu = sp as usize;
+        let to_write = &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[spu..spu + 8];
+        to_write.clone_from_slice(&u64_as_u8_le(num));
+    }
+}
 
 #[allow(clippy::print_stdout)]
 unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
-    let instance = (&mut *vmctx).instance();
-    let address = match instance.lookup_immutable("memory") {
-        Some(wasmtime_runtime::Export::Memory {
-            address,
-            memory: _memory,
-            vmctx: _vmctx,
-        }) => (address),
-        Some(_) => {
-            panic!("nomatch");
-        }
-        None => {
-            panic!("nomatch 2");
-        }
-    };
-
+    let address = FuncContext::new(vmctx).address;
     let memory_def = &*address;
-    let foo =
+    let message =
         &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
-    println!("{:?}", str::from_utf8(&foo).unwrap());
-
-    // let fd: i32 = varargs.get(instance);
-    // assert!(!msg.is_null());
-    // println!("{}", msg);
+    println!("{:?}", str::from_utf8(&message).unwrap());
 }
 
-extern "C" fn go_debug(_sp: i32) {
+extern "C" fn go_debug(_sp: u32) {
     println!("debug")
 }
 
-extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
-    println!("debug")
+extern "C" fn go_wasmexit(_sp: u32, _vmctx: *mut VMContext) {
+    println!("wasmexit")
+}
+
+fn as_u32_le(array: &[u8]) -> u32 {
+    ((array[0] as u32) << 0)
+        | ((array[1] as u32) << 8)
+        | ((array[2] as u32) << 16)
+        | ((array[3] as u32) << 24)
+}
+
+fn u64_as_u8_le(x:u64) -> [u8;8] {
+    [
+    (x & 0xff) as u8, 
+    ((x >> 8) & 0xff) as u8, 
+    ((x >> 16) & 0xff) as u8, 
+    ((x >> 24) & 0xff) as u8,
+    ((x >> 32) & 0xff) as u8,
+    ((x >> 40) & 0xff) as u8,
+    ((x >> 48) & 0xff) as u8,
+    ((x >> 56) & 0xff) as u8,
+    ]
+}
+
+unsafe extern "C" fn go_wasmwrite(sp: u32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    print!("{}", fc.get_string(sp + 16));
+}
+
+unsafe extern "C" fn go_nanotime(sp: u32, vmctx: *mut VMContext) {
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH)
+        .unwrap();
+    let ms_epoch = since_the_epoch.as_secs() * 1000 +
+                since_the_epoch.subsec_nanos() as u64 / 1_000_000;
+    let fc = FuncContext::new(vmctx);
+    fc.set_u64(sp+8, ms_epoch);
+}
+extern "C" fn go_walltime(_sp: u32, _vmctx: *mut VMContext) {
+    println!("go_walltime")
+}
+extern "C" fn go_get_random_data(_sp: u32, _vmctx: *mut VMContext) {
+    println!("go_get_random_data")
 }
 
 /// Return an instance implementing the "spectest" interface used in the
@@ -142,19 +211,20 @@ pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
         vec![ir::AbiParam::new(types::I32)],
         "runtime.wasmWrite".to_owned(),
     );
-    finished_functions.push(go_debug as *const VMFunctionBody);
+    finished_functions.push(go_wasmwrite as *const VMFunctionBody);
     register_func(
         &mut module,
         vec![ir::AbiParam::new(types::I32)],
         "runtime.nanotime".to_owned(),
     );
-    finished_functions.push(go_debug as *const VMFunctionBody);
+    finished_functions.push(go_nanotime as *const VMFunctionBody);
+
     register_func(
         &mut module,
         vec![ir::AbiParam::new(types::I32)],
         "runtime.walltime".to_owned(),
     );
-    finished_functions.push(go_debug as *const VMFunctionBody);
+    finished_functions.push(go_walltime as *const VMFunctionBody);
 
     register_func(
         &mut module,
@@ -175,7 +245,7 @@ pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
         vec![ir::AbiParam::new(types::I32)],
         "runtime.getRandomData".to_owned(),
     );
-    finished_functions.push(go_debug as *const VMFunctionBody);
+    finished_functions.push(go_get_random_data as *const VMFunctionBody);
 
     let memory = module.memory_plans.push(MemoryPlan {
         memory: Memory {

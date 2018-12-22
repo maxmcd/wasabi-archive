@@ -33,9 +33,12 @@ pub fn new(
         )
     };
 
+    // module
+    //     .imported_memories
+    //     .push(("env".to_owned(), "memory".to_owned()));
     module
         .imported_memories
-        .push(("env".to_owned(), "memory".to_owned()));
+        .push(("go".to_owned(), "memory".to_owned()));
 
     let compilation_timer = SystemTime::now();
     let (compilation, relocations) =
