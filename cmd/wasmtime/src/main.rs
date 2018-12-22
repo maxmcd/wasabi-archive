@@ -177,9 +177,15 @@ fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String
         data = wabt::wat2wasm(data).map_err(|err| String::from(err.description()))?;
     }
     let mut resolver = WasmNamespace::new();
-    let instance = resolver::instantiate_spectest().unwrap();
+
+    let instance = resolver::instantiate_env().unwrap();
     let index = resolver.instances.push(instance);
     resolver.names.insert("env".to_owned(), index);
+
+    let instance = resolver::instantiate_go().unwrap();
+    let index = resolver.instances.push(instance);
+    resolver.names.insert("go".to_owned(), index);
+
     let mut jit_code = JITCode::new();
     let mut instance_plus = instance_plus_plus::new(&mut jit_code, isa, &data, &mut resolver)
         .map_err(|e| e.to_string())?;

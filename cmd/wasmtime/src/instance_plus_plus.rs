@@ -40,6 +40,7 @@ pub fn new(
     let compilation_timer = SystemTime::now();
     let (compilation, relocations) =
         compile_module(&module, &lazy_function_body_inputs, isa).map_err(ActionError::Compile)?;
+
     println!("Compile time: {:?}", compilation_timer.elapsed().unwrap());
 
     let allocated_functions = allocate_functions(jit_code, compilation).map_err(|message| {
