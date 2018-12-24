@@ -606,6 +606,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cranelift-entity 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cranelift-native 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cranelift-wasm 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "docopt 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "faerie 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "file-per-thread-logger 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pretty_env_logger 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.82 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.82 (registry+https://github.com/rust-lang/crates.io-index)",
+ "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wabt 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wasmtime-environ 0.1.0",
+ "wasmtime-execute 0.1.0",
+ "wasmtime-obj 0.1.0",
+ "wasmtime-runtime 0.1.0",
+ "wasmtime-wast 0.1.0",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -852,30 +876,6 @@ source = "git+https://github.com/sunfishcode/wasmparser.rs?branch=export-operato
 name = "wasmparser"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "wasmtime"
-version = "0.1.0"
-dependencies = [
- "cranelift-codegen 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "cranelift-entity 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "cranelift-native 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "cranelift-wasm 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "docopt 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "faerie 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "file-per-thread-logger 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "pretty_env_logger 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rand 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.82 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_derive 1.0.82 (registry+https://github.com/rust-lang/crates.io-index)",
- "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "wabt 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0",
- "wasmtime-execute 0.1.0",
- "wasmtime-obj 0.1.0",
- "wasmtime-runtime 0.1.0",
- "wasmtime-wast 0.1.0",
-]
 
 [[package]]
 name = "wasmtime-environ"

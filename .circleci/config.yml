@@ -8,25 +8,6 @@ jobs:
       - checkout
       - setup_remote_docker
       - run:
-          name: build go
+          name: print done
           command: |
-            docker-compose build go
-      - run:
-          name: build runtime
-          command: |
-            docker-compose build runtime
-      - run:
-          name: build go-fs
-          command: |
-            docker-compose build go-fs
-            docker-compose run go-fs
-      - run:
-          name: build gowasm
-          command: |
-            docker-compose build gowasm
-            docker-compose run gowasm
-      - run:
-          name: build rust-basic
-          command: |
-            docker-compose build rust-basic
-            docker-compose run rust-basic
+            echo done
