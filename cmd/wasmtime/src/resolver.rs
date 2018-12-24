@@ -4,6 +4,7 @@ use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use std::rc::Rc;
+use rand::{thread_rng, Rng};
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::str;
@@ -36,43 +37,31 @@ impl FuncContext {
         Self { address }
     }
 
-    unsafe fn get_i32(&self, sp: u32) -> u32 {
+    unsafe fn get_u32(&self, sp: u32) -> u32 {
         let spu = sp as usize;
         let memory_def = &*self.address;
         as_u32_le(&slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8])
     }
     unsafe fn get_string(&self, sp: u32) -> &str {
         let memory_def = &*self.address;
-        let saddr = self.get_i32(sp) as usize;
-        let ln = self.get_i32(sp + 8) as usize;
+        let saddr = self.get_u32(sp) as usize;
+        let ln = self.get_u32(sp + 8) as usize;
         str::from_utf8(
             &slice::from_raw_parts(memory_def.base, memory_def.current_length)[saddr..saddr + ln],
         )
         .unwrap()
     }
     unsafe fn set_u64(&self, sp: u32, num: u64) {
-        let memory_def = &*self.address;
-        let spu = sp as usize;
-        let to_write = &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[spu..spu + 8];
-        to_write.clone_from_slice(&u64_as_u8_le(num));
+        self.mut_mem_slice(sp as usize, (sp+8) as usize).clone_from_slice(&u64_as_u8_le(num));
     }
-}
+    unsafe fn set_u32(&self, sp: u32, num: u32) {
+        self.mut_mem_slice(sp as usize, (sp+4) as usize).clone_from_slice(&u32_as_u8_le(num));
+    }
+    unsafe fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+        let memory_def = &*self.address;
+        &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
+    }
 
-#[allow(clippy::print_stdout)]
-unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
-    let address = FuncContext::new(vmctx).address;
-    let memory_def = &*address;
-    let message =
-        &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
-    println!("{:?}", str::from_utf8(&message).unwrap());
-}
-
-extern "C" fn go_debug(_sp: u32) {
-    println!("debug")
-}
-
-extern "C" fn go_wasmexit(_sp: u32, _vmctx: *mut VMContext) {
-    println!("wasmexit")
 }
 
 fn as_u32_le(array: &[u8]) -> u32 {
@@ -95,9 +84,50 @@ fn u64_as_u8_le(x:u64) -> [u8;8] {
     ]
 }
 
+
+fn u32_as_u8_le(x:u32) -> [u8;4] {
+    [
+    (x & 0xff) as u8, 
+    ((x >> 8) & 0xff) as u8, 
+    ((x >> 16) & 0xff) as u8, 
+    ((x >> 24) & 0xff) as u8,
+    ]
+}
+
+#[allow(clippy::print_stdout)]
+unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
+    let address = FuncContext::new(vmctx).address;
+    let memory_def = &*address;
+    let message =
+        &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
+    println!("{:?}", str::from_utf8(&message).unwrap());
+}
+
+extern "C" fn go_debug(_sp: u32) {
+    println!("debug")
+}
+
+unsafe extern "C" fn go_wasmexit(sp: u32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    let exit_code = fc.get_u32(sp+8);
+    if exit_code != 0 {
+        println!("Wasm exited with a non-zero exit code: {}", exit_code);    
+    }    
+    // TODO: exit program?
+}
+
 unsafe extern "C" fn go_wasmwrite(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     print!("{}", fc.get_string(sp + 16));
+}
+
+unsafe extern "C" fn go_walltime(sp: u32, vmctx: *mut VMContext) {
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH)
+        .unwrap();
+    let fc = FuncContext::new(vmctx);
+    fc.set_u64(sp+8, since_the_epoch.as_secs());
+    fc.set_u32(sp+8+8, since_the_epoch.subsec_nanos());
 }
 
 unsafe extern "C" fn go_nanotime(sp: u32, vmctx: *mut VMContext) {
@@ -109,11 +139,14 @@ unsafe extern "C" fn go_nanotime(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     fc.set_u64(sp+8, ms_epoch);
 }
-extern "C" fn go_walltime(_sp: u32, _vmctx: *mut VMContext) {
-    println!("go_walltime")
-}
-extern "C" fn go_get_random_data(_sp: u32, _vmctx: *mut VMContext) {
-    println!("go_get_random_data")
+
+
+unsafe extern "C" fn go_get_random_data(sp: u32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    // let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
+    let addr = fc.get_u32(sp + 8);
+    let ln = fc.get_u32(sp + 16);
+    thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr+ln) as usize));
 }
 
 /// Return an instance implementing the "spectest" interface used in the

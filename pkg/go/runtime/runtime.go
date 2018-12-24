@@ -58,7 +58,7 @@ func syscall_Getpagesize() int { return int(physPageSize) }
 //go:linkname os_runtime_args os.runtime_args
 func os_runtime_args() []string {
 	if GOOS == "js" {
-		// the flags lib relies an an Arg[0]
+		//max the flags lib relies an an Arg[0]
 		argslice = []string{"foo"}
 	}
 	return append([]string{}, argslice...)

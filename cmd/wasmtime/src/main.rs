@@ -33,6 +33,7 @@ extern crate cranelift_wasm;
 extern crate docopt;
 extern crate target_lexicon;
 extern crate wasmtime_environ;
+extern crate rand;
 extern crate wasmtime_execute;
 extern crate wasmtime_runtime;
 #[macro_use]
@@ -89,7 +90,7 @@ struct Args {
 
 /// An opaque reference to an `InstancePlus`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InstancePlusIndex(u32);
+struct InstancePlusIndex(u32);
 entity_impl!(InstancePlusIndex, "instance");
 
 struct WasmNamespace {
