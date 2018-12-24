@@ -1,3 +1,8 @@
+# Wasm Servers
+
+The goal of this project is to experiment with a WebAssembly runtime that will run Go programs. The Go program should have full networking capability, be fast, and strongly sandboxed.
+
+Cranelift and Wasmtime are used for the WebAssembly runtime. 
 
 ## Resources
 
