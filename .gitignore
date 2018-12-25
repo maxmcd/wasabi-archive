@@ -1,6 +1,7 @@
 *.wasm
 *.wat
 .DS_Store
-node_modules
 cmd/ts-asm/build
-cmd/wasmtime/target
+node_modules
+runtime/target
+todo.md

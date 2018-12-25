@@ -6,6 +6,7 @@ Cranelift and Wasmtime are used for the WebAssembly runtime.
 
 ## Resources
 
+- https://cloudabi.org/write/rust/
 - Candidate Typescript compiler <br /> https://github.com/AssemblyScript/assemblyscript
 - Some llvm limitations for pypy, possibly re: python on wasm <br /> https://rpython.readthedocs.io/en/latest/faq.html#could-we-use-llvm
 - Rust syscall limitations <br /> https://www.reddit.com/r/rust/comments/8y3fei/how_do_modules_like_stdfs_and_stdnet_work_with/

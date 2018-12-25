@@ -1,4 +1,4 @@
-//! Wasmtime is a user of wasmtime without enough creatifity to come up with a new name
+//! Wasmtime is a user of wasmtime without enough creatifivy to come up with a new name
 
 #![deny(
     missing_docs,

@@ -7,4 +7,4 @@ RUN apt-get update \
     clang \
     `# noop`
 
-WORKDIR /opt/wasmtime/
+WORKDIR /opt/runtime/
