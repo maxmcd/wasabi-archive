@@ -15,18 +15,18 @@ use wasmtime_execute::{ActionError, InstancePlus};
 use wasmtime_runtime::{Imports, VMContext, VMFunctionBody, VMMemoryDefinition};
 
 struct FuncContext {
-    address: *mut VMMemoryDefinition,
+    definition: *mut VMMemoryDefinition,
 }
 
 impl FuncContext {
     fn new(vmctx: *mut VMContext) -> Self {
         let instance = unsafe { (&mut *vmctx).instance() };
-        let address = match instance.lookup("memory") {
+        let definition = match instance.lookup("memory") {
             Some(wasmtime_runtime::Export::Memory {
-                address,
+                definition,
                 memory: _memory,
                 vmctx: _vmctx,
-            }) => (address),
+            }) => (definition),
             Some(_) => {
                 panic!("can't find memory");
             }
@@ -34,16 +34,16 @@ impl FuncContext {
                 panic!("nomatch 2");
             }
         };
-        Self { address }
+        Self { definition }
     }
 
     unsafe fn get_u32(&self, sp: u32) -> u32 {
         let spu = sp as usize;
-        let memory_def = &*self.address;
+        let memory_def = &*self.definition;
         as_u32_le(&slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8])
     }
     unsafe fn get_string(&self, sp: u32) -> &str {
-        let memory_def = &*self.address;
+        let memory_def = &*self.definition;
         let saddr = self.get_u32(sp) as usize;
         let ln = self.get_u32(sp + 8) as usize;
         str::from_utf8(
@@ -58,7 +58,7 @@ impl FuncContext {
         self.mut_mem_slice(sp as usize, (sp+4) as usize).clone_from_slice(&u32_as_u8_le(num));
     }
     unsafe fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
-        let memory_def = &*self.address;
+        let memory_def = &*self.definition;
         &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
     }
 
@@ -96,8 +96,8 @@ fn u32_as_u8_le(x:u32) -> [u8;4] {
 
 #[allow(clippy::print_stdout)]
 unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
-    let address = FuncContext::new(vmctx).address;
-    let memory_def = &*address;
+    let definition = FuncContext::new(vmctx).definition;
+    let memory_def = &*definition;
     let message =
         &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
     println!("{:?}", str::from_utf8(&message).unwrap());
@@ -248,6 +248,12 @@ pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
     register_func(
         &mut module,
         vec![ir::AbiParam::new(types::I32)],
+        "syscall.wasmWrite".to_owned(),
+    );
+    finished_functions.push(go_wasmwrite as *const VMFunctionBody);
+    register_func(
+        &mut module,
+        vec![ir::AbiParam::new(types::I32)],
         "runtime.nanotime".to_owned(),
     );
     finished_functions.push(go_nanotime as *const VMFunctionBody);
@@ -279,6 +285,20 @@ pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
         "runtime.getRandomData".to_owned(),
     );
     finished_functions.push(go_get_random_data as *const VMFunctionBody);
+
+    register_func(
+        &mut module,
+        vec![ir::AbiParam::new(types::I32)],
+        "syscall/wasm.getRandomData".to_owned(),
+    );
+    finished_functions.push(go_get_random_data as *const VMFunctionBody);
+    
+    register_func(
+        &mut module,
+        vec![ir::AbiParam::new(types::I32)],
+        "syscall.Syscall".to_owned(),
+    );
+    finished_functions.push(go_debug as *const VMFunctionBody);
 
     let memory = module.memory_plans.push(MemoryPlan {
         memory: Memory {

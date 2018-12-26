@@ -1,10 +1,10 @@
 FROM golang:1.11
 
-WORKDIR /go/src/github.com/maxmcd/wasm-servers/pkg/go
+WORKDIR /go/src/github.com/maxmcd/wasm-servers/go
 
 RUN go get github.com/go-interpreter/wagon
 
-COPY ./go .
+COPY . .
 
 RUN find . -type f -exec cp -v --parents {} /usr/local/go/src \;
 
