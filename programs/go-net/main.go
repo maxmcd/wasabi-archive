@@ -8,6 +8,11 @@ import (
 )
 
 func main() {
+
+	_, err := http.Get("http://www.google.com")
+	if err != nil {
+		panic(err)
+	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Request recieved")
