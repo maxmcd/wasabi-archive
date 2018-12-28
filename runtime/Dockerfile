@@ -8,7 +8,7 @@ RUN apt-get update \
     clang \
     `# noop`
 
-RUN rustup install nightly-2018-12-20
+RUN rustup install nightly
 
 # Cache the bulk of the dependencies
 RUN mkdir src && touch src/main.rs \
@@ -28,10 +28,10 @@ wasmtime-execute = { git = "https://github.com/CraneStation/wasmtime" } \n\
 wasmtime-obj = { git = "https://github.com/CraneStation/wasmtime" } \n\
 wasmtime-wast = { git = "https://github.com/CraneStation/wasmtime" } \n\
 ' > Cargo.toml \
-&& cat Cargo.toml && cargo +nightly-2018-12-20 build --release || true
+&& cat Cargo.toml && cargo +nightly build --release || true
 
 COPY Cargo.lock Cargo.lock
 COPY Cargo.toml Cargo.toml
-RUN cargo +nightly-2018-12-20 build --release || true && rm src/*.rs
+RUN cargo +nightly build --release || true && rm src/*.rs
 
 

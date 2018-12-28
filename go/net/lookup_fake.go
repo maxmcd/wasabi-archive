@@ -8,7 +8,9 @@ package net
 
 import (
 	"context"
+	"errors"
 	"syscall"
+	"syscall/wasm"
 )
 
 func lookupProtocol(ctx context.Context, name string) (proto int, err error) {
@@ -21,10 +23,24 @@ func (*Resolver) lookupHost(ctx context.Context, host string) (addrs []string, e
 	return nil, syscall.ENOPROTOOPT
 }
 
+func lookupHost(addr string) (ref int32, err bool)
+
 func (*Resolver) lookupIP(ctx context.Context, host string) (addrs []IPAddr, err error) {
 	println("lookupIP")
+	ref, ok := lookupHost(host)
+	if ok {
+		refs := wasm.GetArrayOfRefs(ref)
+		addrs = make([]IPAddr, len(refs))
+		for i, ref := range refs {
+			val := wasm.GetBytes(ref)
+			addrs[i] = IPAddr{IP: val}
+		}
+		return
+	}
+	err = errors.New(string(wasm.GetBytes(ref)))
+	return
 	// return []IPAddr{{IP: []byte{127, 0, 0, 1}}}, nil
-	return nil, syscall.ENOPROTOOPT
+	// return nil, syscall.ENOPROTOOPT
 }
 
 func (*Resolver) lookupPort(ctx context.Context, network, service string) (port int, err error) {

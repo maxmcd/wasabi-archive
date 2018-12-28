@@ -153,8 +153,10 @@ func (sa *SockaddrDatalink) copy() Sockaddr {
 
 func (sa *SockaddrDatalink) key() interface{} { return *sa }
 
-func Socket(proto, sotype, unused int) (fd int, err error) {
-	return 0, ENOSYS
+func socket(proto, sotype, unused int) (fd int, err int)
+func Socket(domain, typ, proto int) (fd int, err error) {
+	fd, _ = socket(domain, typ, proto)
+	return fd, nil
 }
 
 func Bind(fd int, sa Sockaddr) error {

@@ -31,9 +31,10 @@ extern crate cranelift_entity;
 extern crate cranelift_native;
 extern crate cranelift_wasm;
 extern crate docopt;
+extern crate libc;
+extern crate rand;
 extern crate target_lexicon;
 extern crate wasmtime_environ;
-extern crate rand;
 extern crate wasmtime_execute;
 extern crate wasmtime_runtime;
 #[macro_use]
@@ -41,6 +42,8 @@ extern crate serde_derive;
 extern crate file_per_thread_logger;
 extern crate pretty_env_logger;
 extern crate wabt;
+#[macro_use]
+extern crate lazy_static;
 
 mod instance_plus_plus;
 mod resolver;
