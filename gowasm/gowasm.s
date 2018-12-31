@@ -20,19 +20,11 @@ TEXT ·getenv(SB), NOSPLIT, $0
     CallImport
     RET
 
-TEXT ·prepareArrayOfRefs(SB), NOSPLIT, $0
+TEXT ·loadBytes(SB), NOSPLIT, $0
     CallImport
     RET
 
-TEXT ·loadArrayOfRefs(SB), NOSPLIT, $0
-    CallImport
-    RET
-
-TEXT ·valueLoadString(SB), NOSPLIT, $0
-    CallImport
-    RET
-
-TEXT ·valuePrepareString(SB), NOSPLIT, $0
+TEXT ·prepareBytes(SB), NOSPLIT, $0
     CallImport
     RET
 

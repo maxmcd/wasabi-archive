@@ -5,3 +5,4 @@ cmd/ts-asm/build
 node_modules
 runtime/target
 todo.md
+names.md

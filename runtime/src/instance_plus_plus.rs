@@ -43,8 +43,13 @@ pub fn new(
     let compilation_timer = SystemTime::now();
     let (compilation, relocations) =
         compile_module(&module, &lazy_function_body_inputs, isa).map_err(ActionError::Compile)?;
-    
-    println!("Compile time: {:?}", compilation_timer.elapsed().unwrap());
+
+    println!(
+        "Compilation time: {:?}",
+        compilation_timer.elapsed().unwrap()
+    );
+
+    let import_finish_publish_timer = SystemTime::now();
 
     let allocated_functions = allocate_functions(jit_code, compilation).map_err(|message| {
         ActionError::Instantiate(InstantiationError::Resource(format!(
@@ -53,9 +58,18 @@ pub fn new(
         )))
     })?;
 
+    println!(
+        "Allocated functions after: {:?}",
+        import_finish_publish_timer.elapsed().unwrap()
+    );
+
     let imports = link_module(&module, &allocated_functions, relocations, resolver)
         .map_err(ActionError::Link)?;
 
+    println!(
+        "link_module after: {:?}",
+        import_finish_publish_timer.elapsed().unwrap()
+    );
     // Gather up the pointers to the compiled functions.
     let finished_functions: BoxedSlice<DefinedFuncIndex, *const VMFunctionBody> =
         allocated_functions
@@ -69,6 +83,10 @@ pub fn new(
 
     // Make all code compiled thus far executable.
     jit_code.publish();
+    println!(
+        "Published after: {:?}",
+        import_finish_publish_timer.elapsed().unwrap()
+    );
 
     InstancePlus::with_parts(
         Rc::new(module),

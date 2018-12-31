@@ -2,10 +2,7 @@ package gowasm
 
 import (
 	"bytes"
-	"fmt"
 	"log"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -50,32 +47,5 @@ func TestLookupAddr(t *testing.T) {
 	}
 	if names[0] != "localhost" {
 		log.Fatal("localhost isn't localhost")
-	}
-}
-
-func TestInternalHttp(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	}))
-
-	resp, err := http.Get(s.URL)
-	if err != nil {
-		t.Error(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Error("Wrong status code", resp.StatusCode)
-	}
-}
-
-func TestHttp(t *testing.T) {
-	resp, err := http.Get("https://www.google.com")
-	fmt.Println(resp, err)
-}
-
-// Doesn't seem to work with exec...
-func BenchmarkEnv(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		Setenv("something", "value")
-		_, _ = Getenv("something-else")
 	}
 }

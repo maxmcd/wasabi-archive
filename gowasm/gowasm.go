@@ -42,25 +42,22 @@ func Getenv(key string) (value string, found bool) {
 	return
 }
 
-func valuePrepareString(ref int32) int64
+func prepareBytes(ref int32) int64
 
-func valueLoadString(ref int32, p []byte)
+func loadBytes(ref int32, p []byte)
 
 func getString(ref int32) string {
-	ln := valuePrepareString(ref)
+	ln := prepareBytes(ref)
 	b := make([]byte, ln)
-	valueLoadString(ref, b)
+	loadBytes(ref, b)
 	return string(b)
 }
 
-func prepareArrayOfRefs(ref int32) int64
-func loadArrayOfRefs(ref int32, p []byte)
-
 func getArrayOfRefs(ref int32) (out []int32) {
-	ln := prepareArrayOfRefs(ref)
+	ln := prepareBytes(ref)
 	out = make([]int32, ln/4)
 	b := make([]byte, ln)
-	loadArrayOfRefs(ref, b)
+	loadBytes(ref, b)
 	for i := 0; i < int(ln/4); i++ {
 		buf := bytes.NewReader(b[i*4 : i*4+4])
 		if err := binary.Read(buf, binary.LittleEndian, &out[i]); err != nil {
@@ -149,10 +146,3 @@ func LookupTXT(addr string) (names []string, err error) {
 	}
 	return
 }
-
-// func lookupAddr(addr string) (names []string, err error)
-// func LookupCNAME(host string) (cname string, err error)
-// func LookupHost(host string) (addrs []string, err error)
-// func LookupPort(network, service string) (port int, err error)
-// func LookupTXT(name string) ([]string, error)
-// func Dial(network, address string) (Conn, error)

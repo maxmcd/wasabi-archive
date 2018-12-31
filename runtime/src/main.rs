@@ -31,7 +31,6 @@ extern crate cranelift_entity;
 extern crate cranelift_native;
 extern crate cranelift_wasm;
 extern crate docopt;
-extern crate libc;
 extern crate rand;
 extern crate target_lexicon;
 extern crate wasmtime_environ;
@@ -61,6 +60,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
+use std::time::SystemTime;
 use wasmtime_execute::{ActionOutcome, InstancePlus, JITCode, Resolver};
 use wasmtime_runtime::Export;
 
@@ -193,6 +193,8 @@ fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String
     let mut jit_code = JITCode::new();
     let mut instance_plus = instance_plus_plus::new(&mut jit_code, isa, &data, &mut resolver)
         .map_err(|e| e.to_string())?;
+
+    let invoke_timer = SystemTime::now();
     if let Some(ref f) = args.flag_invoke {
         match instance_plus
             .invoke(&mut jit_code, isa, &f, &[])
@@ -204,6 +206,6 @@ fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String
             }
         }
     }
-
+    println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
     Ok(())
 }
