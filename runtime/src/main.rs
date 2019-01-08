@@ -1,11 +1,6 @@
 //! Wasmtime is a user of wasmtime without enough creatifivy to come up with a new name
 
-#![deny(
-    missing_docs,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unstable_features
-)]
+#![deny(missing_docs, trivial_numeric_casts, unstable_features)]
 #![warn(unused_import_braces)]
 #![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
 #![cfg_attr(
@@ -24,6 +19,7 @@
         clippy::use_self
     )
 )]
+// #![feature(futures_api)]
 
 extern crate cranelift_codegen;
 #[macro_use]
@@ -32,27 +28,23 @@ extern crate cranelift_native;
 extern crate cranelift_wasm;
 extern crate docopt;
 extern crate rand;
+extern crate reqwest;
 extern crate target_lexicon;
 extern crate wasmtime_environ;
-extern crate wasmtime_execute;
+extern crate wasmtime_jit;
 extern crate wasmtime_runtime;
 #[macro_use]
 extern crate serde_derive;
 extern crate file_per_thread_logger;
 extern crate pretty_env_logger;
 extern crate wabt;
-#[macro_use]
-extern crate lazy_static;
 
-mod instance_plus_plus;
 mod resolver;
 
-use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_entity::PrimaryMap;
 use docopt::Docopt;
-use std::collections::HashMap;
+
 use std::error::Error;
 use std::fs::File;
 use std::io;
@@ -61,8 +53,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
 use std::time::SystemTime;
-use wasmtime_execute::{ActionOutcome, InstancePlus, JITCode, Resolver};
-use wasmtime_runtime::Export;
+use wasmtime_jit::{instantiate, ActionOutcome, Compiler, Namespace};
 
 static LOG_FILENAME_PREFIX: &str = "cranelift.dbg.";
 
@@ -95,31 +86,6 @@ struct Args {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct InstancePlusIndex(u32);
 entity_impl!(InstancePlusIndex, "instance");
-
-struct WasmNamespace {
-    names: HashMap<String, InstancePlusIndex>,
-    instances: PrimaryMap<InstancePlusIndex, InstancePlus>,
-}
-
-impl WasmNamespace {
-    fn new() -> Self {
-        Self {
-            names: HashMap::new(),
-            instances: PrimaryMap::new(),
-        }
-    }
-}
-
-impl Resolver for WasmNamespace {
-    fn resolve(&mut self, module: &str, field: &str) -> Option<Export> {
-        println!("Resolving {} {}", module, field);
-        if let Some(index) = self.names.get(module) {
-            self.instances[*index].instance.lookup(field)
-        } else {
-            None
-        }
-    }
-}
 
 fn read_to_end(path: PathBuf) -> Result<Vec<u8>, io::Error> {
     let mut buf: Vec<u8> = Vec::new();
@@ -159,10 +125,11 @@ fn main() {
     }
 
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
+    let mut compiler = Compiler::new(isa);
 
     for filename in &args.arg_file {
         let path = Path::new(&filename);
-        match handle_module(&args, path, &*isa) {
+        match handle_module(&mut compiler, &args, path) {
             Ok(()) => {}
             Err(message) => {
                 let name = path.as_os_str().to_string_lossy();
@@ -173,31 +140,73 @@ fn main() {
     }
 }
 
-fn handle_module(args: &Args, path: &Path, isa: &TargetIsa) -> Result<(), String> {
+fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<(), String> {
     let mut data =
         read_to_end(path.to_path_buf()).map_err(|err| String::from(err.description()))?;
     // if data is using wat-format, first convert data to wasm
     if !data.starts_with(&[b'\0', b'a', b's', b'm']) {
         data = wabt::wat2wasm(data).map_err(|err| String::from(err.description()))?;
     }
-    let mut resolver = WasmNamespace::new();
 
-    let instance = resolver::instantiate_env().unwrap();
-    let index = resolver.instances.push(instance);
-    resolver.names.insert("env".to_owned(), index);
+    let mut namespace = Namespace::new();
 
-    let instance = resolver::instantiate_go().unwrap();
-    let index = resolver.instances.push(instance);
-    resolver.names.insert("go".to_owned(), index);
+    let instance = resolver::instantiate_env().expect("Instantiate env");
+    let env_index = namespace.instance(Some("env"), instance);
 
-    let mut jit_code = JITCode::new();
-    let mut instance_plus = instance_plus_plus::new(&mut jit_code, isa, &data, &mut resolver)
-        .map_err(|e| e.to_string())?;
+    let instance = resolver::instantiate_go().expect("Instantiate go");
+    let go_index = namespace.instance(Some("go"), instance);
+    // let index = resolver.instances.push(instance);
+    // resolver.names.insert("env".to_owned(), index);
 
+    // let index = resolver.instances.push(instance);
+    // resolver.names.insert("go".to_owned(), index);
+    let mut instance = instantiate(compiler, &data, &mut namespace).map_err(|e| e.to_string())?;
+    // {
+    //     let state = instance.host_state();
+    //     let val = state.downcast_mut::<Box<SharedState>>().unwrap();
+    //     *val = Box::new(SharedState::new());
+    //     // *state = *(Box::new(SharedState::new()) as Box<dyn Any + 'static>);
+    //     // let ss: Box<dyn Any + 'static> = Box::new(SharedState::new());
+    //     // *state = *ss;
+    // }
+    let definition = match instance.lookup("mem") {
+        Some(wasmtime_runtime::Export::Memory {
+            definition,
+            memory: _memory,
+            vmctx: _vmctx,
+        }) => definition,
+        Some(_) => panic!("exported item is not a linear memory",),
+        None => panic!("no export "),
+    };
+    // host_state.definition = Some(definition);
+
+    let index = namespace.instance(None, instance);
+    {
+        let instance = &mut namespace.instances[go_index];
+        let host_state = instance
+            .host_state()
+            .downcast_mut::<resolver::SharedState>()
+            .expect("not a thing");
+        host_state.definition = Some(definition);
+    }
+    {
+        let instance = &mut namespace.instances[env_index];
+        let host_state = instance
+            .host_state()
+            .downcast_mut::<resolver::SharedState>()
+            .expect("not a thing");
+        host_state.definition = Some(definition);
+    }
+    // println!("{:?}", namespace.instances);
+    // let mut jit_code = JITCode::new();
+    // let mut instance_plus = instance_plus_plus::new(&mut jit_code, isa, &data, &mut resolver)
+    //     .map_err(|e| e.to_string())?;
+
+    // resolver::start_event_loop();
     let invoke_timer = SystemTime::now();
     if let Some(ref f) = args.flag_invoke {
-        match instance_plus
-            .invoke(&mut jit_code, isa, &f, &[])
+        match namespace
+            .invoke(compiler, index, f, &[])
             .map_err(|e| e.to_string())?
         {
             ActionOutcome::Returned { .. } => {}

@@ -38,7 +38,7 @@ func roundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	id, errref := startRequest(rdb, nil)
+	id, errref := startRequest(rdb, []byte("hi"))
 	_ = id
 	_ = errref
 	return nil, errors.New("notimplemented")

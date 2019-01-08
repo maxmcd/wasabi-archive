@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"time"
 
 	"github.com/maxmcd/wasm-servers/gowasm"
 	"github.com/maxmcd/wasm-servers/gowasm/http"
@@ -42,6 +43,7 @@ func testSetGetenv() {
 
 func testHTTP() {
 	resp, err := http.Get("https://www.google.com")
+	time.Sleep(time.Second * 1)
 	if err != nil {
 		panic(err)
 	}

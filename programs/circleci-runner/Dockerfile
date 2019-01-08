@@ -16,4 +16,3 @@ RUN apk update && apk add --no-cache openssl ca-certificates curl libgcc && \
     && mv docker-compose-Linux-x86_64 /usr/local/bin/docker-compose
 
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
-

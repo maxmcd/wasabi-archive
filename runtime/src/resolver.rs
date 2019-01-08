@@ -4,54 +4,70 @@ use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use rand::{thread_rng, Rng};
+use reqwest::async::Client;
 use std::collections::HashMap;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::slice;
-use std::str;
-use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{str, thread};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
-use wasmtime_execute::{ActionError, InstancePlus};
-use wasmtime_runtime::{Imports, VMContext, VMFunctionBody, VMMemoryDefinition};
-
-lazy_static! {
-    static ref VALUES: Mutex<HashMap<u32, Vec<u8>>> = { Mutex::new(HashMap::new()) };
-    static ref ENVVARS: Mutex<HashMap<String, String>> = { Mutex::new(HashMap::new()) };
-}
+use wasmtime_jit::InstantiationError;
+use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
 
 struct FuncContext {
-    definition: *mut VMMemoryDefinition,
+    vmctx: *mut VMContext,
+}
+
+pub struct SharedState {
+    pub definition: Option<*mut VMMemoryDefinition>,
+    values: HashMap<u32, Vec<u8>>,
+    pub envvars: HashMap<String, String>,
+}
+impl SharedState {
+    fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+            envvars: HashMap::new(),
+            definition: None,
+        }
+    }
 }
 
 impl FuncContext {
     fn new(vmctx: *mut VMContext) -> Self {
-        let instance = unsafe { (&mut *vmctx).instance() };
-        let definition = match instance.lookup("memory") {
-            Some(wasmtime_runtime::Export::Memory {
-                definition,
-                memory: _memory,
-                vmctx: _vmctx,
-            }) => (definition),
-            Some(_) => {
-                panic!("memory match didn't return a memory!");
-            }
-            None => {
-                panic!("i've lost my mind");
-            }
-        };
-        Self { definition }
+        Self { vmctx: vmctx }
     }
 
+    fn shared_state(&self) -> &mut SharedState {
+        unsafe {
+            (&mut *self.vmctx)
+                .host_state()
+                .downcast_mut::<SharedState>()
+                .unwrap()
+        }
+    }
+
+    unsafe fn definition(&self) -> *mut VMMemoryDefinition {
+        self.shared_state().definition.unwrap()
+    }
+
+    fn values(&self) -> &mut HashMap<u32, Vec<u8>> {
+        &mut self.shared_state().values
+    }
+    fn envvars(&self) -> &mut HashMap<String, String> {
+        &mut self.shared_state().envvars
+    }
     unsafe fn get_u32(&self, sp: u32) -> u32 {
         let spu = sp as usize;
-        let memory_def = &*self.definition;
+        let memory_def = &*self.definition();
         as_u32_le(&slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8])
     }
     unsafe fn get_bytes(&self, sp: u32) -> &[u8] {
-        let memory_def = &*self.definition;
+        let memory_def = &*self.definition();
         let saddr = self.get_u32(sp) as usize;
         let ln = self.get_u32(sp + 8) as usize;
         &slice::from_raw_parts(memory_def.base, memory_def.current_length)[saddr..saddr + ln]
@@ -59,17 +75,19 @@ impl FuncContext {
     unsafe fn get_string(&self, sp: u32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
-    unsafe fn set_u64(&self, sp: u32, num: u64) {
+    fn set_u64(&self, sp: u32, num: u64) {
         self.mut_mem_slice(sp as usize, (sp + 8) as usize)
             .clone_from_slice(&u64_as_u8_le(num));
     }
-    unsafe fn set_u32(&self, sp: u32, num: u32) {
+    fn set_u32(&self, sp: u32, num: u32) {
         self.mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&u32_as_u8_le(num));
     }
-    unsafe fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
-        let memory_def = &*self.definition;
-        &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
+    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+        unsafe {
+            let memory_def = &*self.definition();
+            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
+        }
     }
     unsafe fn set_bool(&self, addr: u32, value: bool) {
         let val = if value { 1 } else { 0 };
@@ -85,9 +103,8 @@ impl FuncContext {
         self.set_u32(addr, self.store_value(byte_references))
     }
     fn store_value(&self, b: Vec<u8>) -> u32 {
-        let mut values = VALUES.lock().unwrap();
-        let reference = values.len() as u32;
-        values.insert(reference, b);
+        let reference = self.values().len() as u32;
+        self.values().insert(reference, b);
         reference
     }
     unsafe fn set_string(&self, address: u32, val: String) {
@@ -126,7 +143,7 @@ fn u32_as_u8_le(x: u32) -> [u8; 4] {
 
 #[allow(clippy::print_stdout)]
 unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
-    let definition = FuncContext::new(vmctx).definition;
+    let definition = FuncContext::new(vmctx).definition();
     let memory_def = &*definition;
     let message =
         &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
@@ -179,14 +196,14 @@ extern "C" fn go_set_env(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let key = unsafe { fc.get_string(sp + 8) };
     let value = unsafe { fc.get_string(sp + 24) };
-    let mut envvars = ENVVARS.lock().unwrap();
+    let envvars = fc.envvars();
     envvars.insert(key.to_owned(), value.to_owned());
 }
 
 extern "C" fn go_get_env(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let key = unsafe { fc.get_string(sp + 8) };
-    let envvars = ENVVARS.lock().unwrap();
+    let envvars = fc.envvars();
     match envvars.get(key) {
         Some(value) => unsafe {
             fc.set_bool(sp + 24, true);
@@ -209,7 +226,15 @@ unsafe extern "C" fn go_wasmexit(sp: u32, vmctx: *mut VMContext) {
 unsafe extern "C" fn go_start_request(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     println!("{:?}", fc.get_string(sp + 8));
-    println!("{:?}", fc.get_bytes(sp + 8 + 16));
+    let memory_def = &*fc.definition();
+    println!(
+        "{:?}",
+        &slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)
+            [(sp as usize)..(sp + 100) as usize]
+    );
+    let sender = RESULT_SENDER.lock().unwrap();
+    let send = sender.as_ref().unwrap();
+    send.send(fc.get_string(sp + 24 + 8).to_string()).unwrap();
 }
 
 unsafe extern "C" fn go_wasmwrite(sp: u32, vmctx: *mut VMContext) {
@@ -248,14 +273,14 @@ unsafe extern "C" fn go_load_bytes(sp: u32, vmctx: *mut VMContext) {
     let addr = fc.get_u32(sp + 16);
     let ln = fc.get_u32(sp + 24);
 
-    let values = VALUES.lock().unwrap();
+    let values = fc.values();
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&values[&reference]);
 }
 unsafe extern "C" fn go_prepare_bytes(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_u32(sp + 8);
-    let values = VALUES.lock().unwrap();
+    let values = fc.values();
     fc.set_u64(sp + 16, values[&reference].len() as u64)
 }
 
@@ -282,9 +307,30 @@ fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
         .map(|iter| iter.map(|socket_address| socket_address.ip()).collect())
 }
 
+pub fn start_event_loop() {
+    let (send, recv) = mpsc::channel();
+    let mut rs = RESULT_SENDER.lock().unwrap();
+    *rs = Some(send);
+
+    thread::spawn(move || loop {
+        match recv.try_recv() {
+            Ok(pay) => {
+                println!("got payload{:?}", pay);
+                // Client::new().get(&pay).send();
+            }
+            Err(err) => match err {
+                std::sync::mpsc::TryRecvError::Empty => {}
+                std::sync::mpsc::TryRecvError::Disconnected => {
+                    panic!("message receiver has disconnected")
+                }
+            },
+        };
+    });
+}
+
 /// Return an instance implementing the "spectest" interface used in the
 /// spec testsuite.
-pub fn instantiate_env() -> Result<InstancePlus, ActionError> {
+pub fn instantiate_env() -> Result<Instance, InstantiationError> {
     let call_conv = isa::CallConv::triple_default(&HOST);
     let pointer_type = types::Type::triple_pointer_type(&HOST);
     let mut module = Module::new();
@@ -320,12 +366,15 @@ pub fn instantiate_env() -> Result<InstancePlus, ActionError> {
 
     let imports = Imports::none();
     let data_initializers = Vec::new();
+    let signatures = PrimaryMap::new();
 
-    InstancePlus::with_parts(
+    Instance::new(
         Rc::new(module),
         finished_functions.into_boxed_slice(),
         imports,
-        data_initializers,
+        &data_initializers,
+        signatures.into_boxed_slice(),
+        Box::new(SharedState::new()),
     )
 }
 
@@ -347,7 +396,7 @@ fn register_func(module: &mut Module, params: Vec<ir::AbiParam>, name: String) {
         .insert(name.to_owned(), Export::Function(func));
 }
 
-pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
+pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let mut module = Module::new();
     let mut finished_functions: PrimaryMap<DefinedFuncIndex, *const VMFunctionBody> =
         PrimaryMap::new();
@@ -581,15 +630,18 @@ pub fn instantiate_go() -> Result<InstancePlus, ActionError> {
     });
     module
         .exports
-        .insert("memory".to_owned(), Export::Memory(memory));
+        .insert("mem".to_owned(), Export::Memory(memory));
 
     let imports = Imports::none();
     let data_initializers = Vec::new();
+    let signatures = PrimaryMap::new();
 
-    InstancePlus::with_parts(
+    Instance::new(
         Rc::new(module),
         finished_functions.into_boxed_slice(),
         imports,
-        data_initializers,
+        &data_initializers,
+        signatures.into_boxed_slice(),
+        Box::new(SharedState::new()),
     )
 }
