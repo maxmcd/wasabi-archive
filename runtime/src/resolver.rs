@@ -21,18 +21,28 @@ use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDef
 struct FuncContext {
     vmctx: *mut VMContext,
 }
+enum JsValue {
+    Bytes(Vec<u8>),
+    String(String),
+    Int(u32),
+    Values(Vec<JsValue>),
+}
 
 pub struct SharedState {
     pub definition: Option<*mut VMMemoryDefinition>,
-    values: HashMap<u32, Vec<u8>>,
-    pub envvars: HashMap<String, String>,
+    pub result_sender: Option<mpsc::Sender<String>>,
+    values: HashMap<u32, JsValue>,
+    envvars: HashMap<String, String>,
+    callback_count: i32,
 }
 impl SharedState {
     fn new() -> Self {
         Self {
             values: HashMap::new(),
             envvars: HashMap::new(),
+            result_sender: None,
             definition: None,
+            callback_count: 0,
         }
     }
 }
@@ -54,25 +64,52 @@ impl FuncContext {
     unsafe fn definition(&self) -> *mut VMMemoryDefinition {
         self.shared_state().definition.unwrap()
     }
-
-    fn values(&self) -> &mut HashMap<u32, Vec<u8>> {
+    fn result_sender(&self) -> &mpsc::Sender<String> {
+        self.shared_state()
+            .result_sender
+            .as_ref()
+            .expect("I should have a sender")
+    }
+    fn values(&self) -> &mut HashMap<u32, JsValue> {
         &mut self.shared_state().values
     }
     fn envvars(&self) -> &mut HashMap<String, String> {
         &mut self.shared_state().envvars
     }
-    unsafe fn get_u32(&self, sp: u32) -> u32 {
+    fn get_u32(&self, sp: u32) -> u32 {
         let spu = sp as usize;
-        let memory_def = &*self.definition();
-        as_u32_le(&slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8])
+        unsafe {
+            let memory_def = &*self.definition();
+            as_u32_le(
+                &slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8],
+            )
+        }
     }
-    unsafe fn get_bytes(&self, sp: u32) -> &[u8] {
-        let memory_def = &*self.definition();
+    fn get_u64(&self, sp: u32) -> u64 {
+        let spu = sp as usize;
+        unsafe {
+            let memory_def = &*self.definition();
+            as_u64_le(
+                &slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8],
+            )
+        }
+    }
+    fn get_f64(&self, sp: u32) -> f64 {
+        f64::from_bits(self.get_u64(sp))
+    }
+    fn get_bytes(&self, sp: u32) -> &[u8] {
         let saddr = self.get_u32(sp) as usize;
         let ln = self.get_u32(sp + 8) as usize;
-        &slice::from_raw_parts(memory_def.base, memory_def.current_length)[saddr..saddr + ln]
+        self._get_bytes(saddr, ln)
     }
-    unsafe fn get_string(&self, sp: u32) -> &str {
+    fn _get_bytes(&self, address: usize, ln: usize) -> &[u8] {
+        let memory_def = unsafe { &*self.definition() };
+        unsafe {
+            &slice::from_raw_parts(memory_def.base, memory_def.current_length)
+                [address..address + ln]
+        }
+    }
+    fn get_string(&self, sp: u32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
     fn set_u64(&self, sp: u32, num: u64) {
@@ -97,18 +134,51 @@ impl FuncContext {
     unsafe fn set_byte_array_array(&self, addr: u32, values: Vec<Vec<u8>>) {
         let mut byte_references = vec![0; values.len() * 4];
         for (i, value) in values.iter().enumerate() {
-            let reference = self.store_value(value.to_vec());
+            let reference = self.store_value_bytes(value.to_vec());
             byte_references[i * 4..i * 4 + 4].clone_from_slice(&u32_as_u8_le(reference));
         }
-        self.set_u32(addr, self.store_value(byte_references))
+        self.set_u32(addr, self.store_value_bytes(byte_references))
     }
-    fn store_value(&self, b: Vec<u8>) -> u32 {
+    fn store_value_bytes(&self, b: Vec<u8>) -> u32 {
+        let reference = self.values().len() as u32;
+        self.values().insert(reference, JsValue::Bytes(b));
+        reference
+    }
+    fn store_value(self, b: JsValue) -> u32 {
         let reference = self.values().len() as u32;
         self.values().insert(reference, b);
         reference
     }
-    unsafe fn set_string(&self, address: u32, val: String) {
-        self.set_u32(address, self.store_value(val.into_bytes()));
+    fn store_string(&self, address: u32, val: String) {
+        self.set_u32(address, self.store_value_bytes(val.into_bytes()));
+    }
+    fn load_string(&self, address: u32) -> String {
+        let reference = self.get_u32(address);
+        let b = match self.values().get(&reference).unwrap() {
+            JsValue::Bytes(b) => b,
+            _ => panic!("load_string needs bytes"),
+        };
+        str::from_utf8(b).unwrap().to_string()
+    }
+    fn load_slice_values(&self, address: u32) -> Vec<JsValue> {
+        let mut out = Vec::new();
+        let array = self.get_u32(address);
+        let len = self.get_u32(address + 8);
+        for n in 0..len {
+            out.push(self.load_value(array + n * 8));
+        }
+        out
+    }
+    fn load_value(&self, address: u32) -> JsValue {
+        let float = self.get_f64(address);
+        let intfloat = float as u32;
+
+        if float == (intfloat) as f64 {
+            //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
+            return JsValue::Int(intfloat);
+        }
+        let reference = self.get_u32(address);
+        self.values().remove(&reference).unwrap()
     }
 }
 
@@ -117,6 +187,17 @@ fn as_u32_le(array: &[u8]) -> u32 {
         | ((array[1] as u32) << 8)
         | ((array[2] as u32) << 16)
         | ((array[3] as u32) << 24)
+}
+
+fn as_u64_le(array: &[u8]) -> u64 {
+    ((array[0] as u64) << 0)
+        | ((array[1] as u64) << 8)
+        | ((array[2] as u64) << 16)
+        | ((array[3] as u64) << 24)
+        | ((array[4] as u64) << 32)
+        | ((array[5] as u64) << 40)
+        | ((array[6] as u64) << 48)
+        | ((array[7] as u64) << 56)
 }
 
 fn u64_as_u8_le(x: u64) -> [u8; 8] {
@@ -154,13 +235,29 @@ extern "C" fn go_debug(_sp: u32) {
     println!("debug")
 }
 
+extern "C" fn go_schedule_callback(sp: u32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    let count = fc.get_u64(sp + 8);
+    println!("schedule callback at time {:?}", count);
+}
+extern "C" fn go_clear_scheduled_callback(_sp: u32) {
+    println!("go_clear_scheduled_callback")
+}
+extern "C" fn go_syscall(_sp: u32) {
+    println!("go_syscall")
+}
+
 extern "C" fn go_js_string_val(_sp: u32) {
     println!("go_js_string_val")
 }
 
 extern "C" fn go_js_value_get(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    println!("js_value_get {}", unsafe { fc.get_string(sp + 16) });
+    let reference = fc.get_u32(sp + 8);
+    let name = fc.get_string(sp + 16);
+    // implement nanHead
+    fc.store_string(sp + 32, name.to_string());
+    println!("js_value_get {} {}", name, reference);
 }
 extern "C" fn go_js_value_set(_sp: u32) {
     println!("js_value_set")
@@ -174,11 +271,54 @@ extern "C" fn go_js_value_set_index(_sp: u32) {
 extern "C" fn go_js_value_invoke(_sp: u32) {
     println!("js_value_invoke")
 }
-extern "C" fn go_js_value_call(_sp: u32) {
-    println!("js_value_call")
+extern "C" fn go_js_value_call(sp: u32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    // const loadSliceOfValues = (addr) => {
+    //     const array = getInt64(addr + 0);
+    //     const len = getInt64(addr + 8);
+    //     const a = new Array(len);
+    //     for (let i = 0; i < len; i++) {
+    //         a[i] = loadValue(array + i * 8);
+    //     }
+    //     return a;
+    // }
+    let array = fc.get_u32(sp + 32);
+    let len = fc.get_u32(sp + 32 + 8);
+    let object = fc.load_string(sp + 8);
+    let method = fc.get_string(sp + 16);
+    println!("js_value_call {} {} {} {}", object, method, array, len);
+
+    if object == "fs" && method == "writeSync" {
+        // println!("fd {:?}", fc.get_f64(array + 0 * 8));
+        let out = match fc.values().get(&fc.get_u32(array + 1 * 8)).unwrap() {
+            JsValue::Bytes(b) => b,
+            _ => panic!("writeSync should write bytes"),
+        };
+        print!("{}", str::from_utf8(out).unwrap());
+        // println!("offset {:?}", fc.get_f64(array + 2 * 8));
+        // // still need to respec this len even if we're ignoring it
+        // println!("len {:?}", fc.get_f64(array + 3 * 8));
+    }
 }
 extern "C" fn go_js_value_new(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
+    let array = fc.get_u32(sp + 16);
+    let len = fc.get_u32(sp + 16 + 8);
+    let name = fc.load_string(sp + 8);
+    println!("js_value_new {} {} {}", name, array, len);
+    if name == "Uint8Array" {
+        let reference = fc.store_value_bytes(
+            fc._get_bytes(
+                fc.get_f64(array + 1 * 8) as usize, // pointer
+                fc.get_f64(array + 2 * 8) as usize, // len
+            )
+            .to_vec(),
+        );
+        fc.set_u32(sp + 40, reference)
+    } else {
+        fc.store_string(sp + 40, "value_new_value".to_string());
+    }
+
     // just always lie and say it worked
     unsafe { fc.set_bool(sp + 48, true) };
 }
@@ -194,20 +334,20 @@ extern "C" fn go_js_value_load_string(_sp: u32) {
 
 extern "C" fn go_set_env(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    let key = unsafe { fc.get_string(sp + 8) };
-    let value = unsafe { fc.get_string(sp + 24) };
+    let key = fc.get_string(sp + 8);
+    let value = fc.get_string(sp + 24);
     let envvars = fc.envvars();
     envvars.insert(key.to_owned(), value.to_owned());
 }
 
 extern "C" fn go_get_env(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    let key = unsafe { fc.get_string(sp + 8) };
+    let key = fc.get_string(sp + 8);
     let envvars = fc.envvars();
     match envvars.get(key) {
         Some(value) => unsafe {
             fc.set_bool(sp + 24, true);
-            fc.set_string(sp + 28, value.to_string());
+            fc.store_string(sp + 28, value.to_string());
         },
         None => unsafe {
             fc.set_bool(sp + 24, false);
@@ -232,9 +372,8 @@ unsafe extern "C" fn go_start_request(sp: u32, vmctx: *mut VMContext) {
         &slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)
             [(sp as usize)..(sp + 100) as usize]
     );
-    let sender = RESULT_SENDER.lock().unwrap();
-    let send = sender.as_ref().unwrap();
-    send.send(fc.get_string(sp + 24 + 8).to_string()).unwrap();
+    let sender = fc.result_sender();
+    sender.send(fc.get_string(sp + 24 + 8).to_string()).unwrap();
 }
 
 unsafe extern "C" fn go_wasmwrite(sp: u32, vmctx: *mut VMContext) {
@@ -274,14 +413,22 @@ unsafe extern "C" fn go_load_bytes(sp: u32, vmctx: *mut VMContext) {
     let ln = fc.get_u32(sp + 24);
 
     let values = fc.values();
+    let b = match values[&reference] {
+        JsValue::Bytes(ref b) => b,
+        _ => panic!("load_bytes needs bytes"),
+    };
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
-        .clone_from_slice(&values[&reference]);
+        .clone_from_slice(&b);
 }
 unsafe extern "C" fn go_prepare_bytes(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_u32(sp + 8);
     let values = fc.values();
-    fc.set_u64(sp + 16, values[&reference].len() as u64)
+    let b = match values[&reference] {
+        JsValue::Bytes(ref b) => b,
+        _ => panic!("prepare_bytes needs bytes"),
+    };
+    fc.set_u64(sp + 16, b.len() as u64);
 }
 
 unsafe extern "C" fn go_lookup_ip(sp: u32, vmctx: *mut VMContext) {
@@ -307,10 +454,8 @@ fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
         .map(|iter| iter.map(|socket_address| socket_address.ip()).collect())
 }
 
-pub fn start_event_loop() {
+pub fn start_event_loop() -> mpsc::Sender<String> {
     let (send, recv) = mpsc::channel();
-    let mut rs = RESULT_SENDER.lock().unwrap();
-    *rs = Some(send);
 
     thread::spawn(move || loop {
         match recv.try_recv() {
@@ -321,11 +466,13 @@ pub fn start_event_loop() {
             Err(err) => match err {
                 std::sync::mpsc::TryRecvError::Empty => {}
                 std::sync::mpsc::TryRecvError::Disconnected => {
-                    panic!("message receiver has disconnected")
+                    return;
                 }
             },
         };
     });
+
+    send
 }
 
 /// Return an instance implementing the "spectest" interface used in the
@@ -378,246 +525,132 @@ pub fn instantiate_env() -> Result<Instance, InstantiationError> {
     )
 }
 
-fn register_func(module: &mut Module, params: Vec<ir::AbiParam>, name: String) {
-    let call_conv = isa::CallConv::triple_default(&HOST);
-    let pointer_type = types::Type::triple_pointer_type(&HOST);
-
-    let sig = module.signatures.push(translate_signature(
-        ir::Signature {
-            params,
-            returns: vec![],
-            call_conv,
-        },
-        pointer_type,
-    ));
-    let func = module.functions.push(sig);
-    module
-        .exports
-        .insert(name.to_owned(), Export::Function(func));
-}
-
 pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let mut module = Module::new();
     let mut finished_functions: PrimaryMap<DefinedFuncIndex, *const VMFunctionBody> =
         PrimaryMap::new();
+    let call_conv = isa::CallConv::triple_default(&HOST);
+    let pointer_type = types::Type::triple_pointer_type(&HOST);
 
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32), ir::AbiParam::new(types::I32)],
-        "println".to_owned(),
-    );
-    finished_functions.push(env_println as *const VMFunctionBody);
+    let functions = [
+        ("debug", go_debug as *const VMFunctionBody),
+        ("runtime.wasmExit", go_wasmexit as *const VMFunctionBody),
+        ("runtime.wasmWrite", go_wasmwrite as *const VMFunctionBody),
+        ("syscall.wasmWrite", go_wasmwrite as *const VMFunctionBody),
+        ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
+        ("runtime.walltime", go_walltime as *const VMFunctionBody),
+        ("syscall.Syscall", go_syscall as *const VMFunctionBody),
+        ("net.lookupHost", go_lookup_ip as *const VMFunctionBody),
+        ("syscall.socket", go_debug as *const VMFunctionBody),
+        (
+            "runtime.scheduleCallback",
+            go_schedule_callback as *const VMFunctionBody,
+        ),
+        (
+            "runtime.clearScheduledCallback",
+            go_clear_scheduled_callback as *const VMFunctionBody,
+        ),
+        (
+            "runtime.getRandomData",
+            go_get_random_data as *const VMFunctionBody,
+        ),
+        (
+            "syscall/wasm.getRandomData",
+            go_get_random_data as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm.getRandomData",
+            go_get_random_data as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm.setenv",
+            go_set_env as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm.getenv",
+            go_get_env as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm.loadBytes",
+            go_load_bytes as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm.prepareBytes",
+            go_prepare_bytes as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasm-servers/gowasm/http.startRequest",
+            go_start_request as *const VMFunctionBody,
+        ),
+        (
+            "syscall/wasm.loadBytes",
+            go_load_bytes as *const VMFunctionBody,
+        ),
+        (
+            "syscall/wasm.prepareBytes",
+            go_prepare_bytes as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.stringVal",
+            go_js_string_val as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueGet",
+            go_js_value_get as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueSet",
+            go_js_value_set as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueIndex",
+            go_js_value_index as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueSetIndex",
+            go_js_value_set_index as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueCall",
+            go_js_value_call as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueNew",
+            go_js_value_new as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueInvoke",
+            go_js_value_invoke as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueLength",
+            go_js_value_length as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valuePrepareString",
+            go_js_value_prepare_string as *const VMFunctionBody,
+        ),
+        (
+            "syscall/js.valueLoadString",
+            go_js_value_load_string as *const VMFunctionBody,
+        ),
+    ];
 
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "debug".to_owned(),
-    );
-    finished_functions.push(go_debug as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.wasmExit".to_owned(),
-    );
-    finished_functions.push(go_wasmexit as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.wasmWrite".to_owned(),
-    );
-    finished_functions.push(go_wasmwrite as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall.wasmWrite".to_owned(),
-    );
-    finished_functions.push(go_wasmwrite as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.nanotime".to_owned(),
-    );
-    finished_functions.push(go_nanotime as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.walltime".to_owned(),
-    );
-    finished_functions.push(go_walltime as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.scheduleCallback".to_owned(),
-    );
-    finished_functions.push(go_debug as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.clearScheduledCallback".to_owned(),
-    );
-    finished_functions.push(go_debug as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "runtime.getRandomData".to_owned(),
-    );
-    finished_functions.push(go_get_random_data as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/wasm.getRandomData".to_owned(),
-    );
-    finished_functions.push(go_get_random_data as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm.getRandomData".to_owned(),
-    );
-    finished_functions.push(go_get_random_data as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm.setenv".to_owned(),
-    );
-    finished_functions.push(go_set_env as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm.getenv".to_owned(),
-    );
-    finished_functions.push(go_get_env as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm.loadBytes".to_owned(),
-    );
-    finished_functions.push(go_load_bytes as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm.prepareBytes".to_owned(),
-    );
-    finished_functions.push(go_prepare_bytes as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "github.com/maxmcd/wasm-servers/gowasm/http.startRequest".to_owned(),
-    );
-    finished_functions.push(go_start_request as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/wasm.loadBytes".to_owned(),
-    );
-    finished_functions.push(go_load_bytes as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/wasm.prepareBytes".to_owned(),
-    );
-    finished_functions.push(go_prepare_bytes as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall.Syscall".to_owned(),
-    );
-    finished_functions.push(go_debug as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "net.lookupHost".to_owned(),
-    );
-    finished_functions.push(go_lookup_ip as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.stringVal".to_owned(),
-    );
-    finished_functions.push(go_js_string_val as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueGet".to_owned(),
-    );
-    finished_functions.push(go_js_value_get as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueSet".to_owned(),
-    );
-    finished_functions.push(go_js_value_set as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueIndex".to_owned(),
-    );
-    finished_functions.push(go_js_value_index as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueSetIndex".to_owned(),
-    );
-    finished_functions.push(go_js_value_set_index as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueCall".to_owned(),
-    );
-    finished_functions.push(go_js_value_call as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueNew".to_owned(),
-    );
-    finished_functions.push(go_js_value_new as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueInvoke".to_owned(),
-    );
-    finished_functions.push(go_js_value_invoke as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueLength".to_owned(),
-    );
-    finished_functions.push(go_js_value_length as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valuePrepareString".to_owned(),
-    );
-    finished_functions.push(go_js_value_prepare_string as *const VMFunctionBody);
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall/js.valueLoadString".to_owned(),
-    );
-    finished_functions.push(go_js_value_load_string as *const VMFunctionBody);
-
-    register_func(
-        &mut module,
-        vec![ir::AbiParam::new(types::I32)],
-        "syscall.socket".to_owned(),
-    );
-    finished_functions.push(go_debug as *const VMFunctionBody);
+    for func in functions.iter() {
+        let sig = module.signatures.push(translate_signature(
+            ir::Signature {
+                params: vec![ir::AbiParam::new(types::I32)],
+                returns: vec![],
+                call_conv,
+            },
+            pointer_type,
+        ));
+        let func_index = module.functions.push(sig);
+        module
+            .exports
+            .insert(func.0.to_owned(), Export::Function(func_index));
+        finished_functions.push(func.1);
+    }
 
     let memory = module.memory_plans.push(MemoryPlan {
         memory: Memory {

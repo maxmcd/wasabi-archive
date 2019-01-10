@@ -1,3 +1,5 @@
+set -o xtrace
+set -o pipefail
 set -e
 cd "$(dirname ${BASH_SOURCE[0]})"
 

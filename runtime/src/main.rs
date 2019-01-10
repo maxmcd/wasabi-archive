@@ -160,7 +160,12 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
 
     // let index = resolver.instances.push(instance);
     // resolver.names.insert("go".to_owned(), index);
+    let instantiate_timer = SystemTime::now();
     let mut instance = instantiate(compiler, &data, &mut namespace).map_err(|e| e.to_string())?;
+    println!(
+        "Instantiation time: {:?}",
+        instantiate_timer.elapsed().unwrap()
+    );
     // {
     //     let state = instance.host_state();
     //     let val = state.downcast_mut::<Box<SharedState>>().unwrap();
@@ -188,6 +193,7 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
             .downcast_mut::<resolver::SharedState>()
             .expect("not a thing");
         host_state.definition = Some(definition);
+        host_state.result_sender = Some(resolver::start_event_loop());
     }
     {
         let instance = &mut namespace.instances[env_index];
