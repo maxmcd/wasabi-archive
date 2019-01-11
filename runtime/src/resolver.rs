@@ -26,6 +26,7 @@ enum JsValue {
     String(String),
     Int(u32),
     Values(Vec<JsValue>),
+    Memory { address: u32, len: u32 },
 }
 
 pub struct SharedState {
@@ -126,7 +127,7 @@ impl FuncContext {
             &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
         }
     }
-    unsafe fn set_bool(&self, addr: u32, value: bool) {
+    fn set_bool(&self, addr: u32, value: bool) {
         let val = if value { 1 } else { 0 };
         self.mut_mem_slice(addr as usize, (addr + 1) as usize)
             .clone_from_slice(&[val]);
@@ -144,7 +145,7 @@ impl FuncContext {
         self.values().insert(reference, JsValue::Bytes(b));
         reference
     }
-    fn store_value(self, b: JsValue) -> u32 {
+    fn store_value(&self, b: JsValue) -> u32 {
         let reference = self.values().len() as u32;
         self.values().insert(reference, b);
         reference
@@ -290,15 +291,27 @@ extern "C" fn go_js_value_call(sp: u32, vmctx: *mut VMContext) {
 
     if object == "fs" && method == "writeSync" {
         // println!("fd {:?}", fc.get_f64(array + 0 * 8));
-        let out = match fc.values().get(&fc.get_u32(array + 1 * 8)).unwrap() {
-            JsValue::Bytes(b) => b,
+        let (address, len) = match fc.values().get(&fc.get_u32(array + 1 * 8)).unwrap() {
+            JsValue::Memory { address, len } => (address, len),
             _ => panic!("writeSync should write bytes"),
         };
-        print!("{}", str::from_utf8(out).unwrap());
+        print!(
+            "{}",
+            str::from_utf8(fc._get_bytes(*address as usize, *len as usize)).unwrap()
+        );
         // println!("offset {:?}", fc.get_f64(array + 2 * 8));
         // // still need to respec this len even if we're ignoring it
         // println!("len {:?}", fc.get_f64(array + 3 * 8));
     }
+    if object == "crypto" && method == "getRandomValues" {
+        let (address, len) = match fc.values().get(&fc.get_u32(array + 0 * 8)).unwrap() {
+            JsValue::Memory { address, len } => (address, len),
+            _ => panic!("getRandomValues should write bytes"),
+        };
+        thread_rng().fill(fc.mut_mem_slice(*address as usize, (address + len) as usize));
+    }
+    // just always lie and say it worked
+    fc.set_bool(sp + 64, true);
 }
 extern "C" fn go_js_value_new(sp: u32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
@@ -307,20 +320,16 @@ extern "C" fn go_js_value_new(sp: u32, vmctx: *mut VMContext) {
     let name = fc.load_string(sp + 8);
     println!("js_value_new {} {} {}", name, array, len);
     if name == "Uint8Array" {
-        let reference = fc.store_value_bytes(
-            fc._get_bytes(
-                fc.get_f64(array + 1 * 8) as usize, // pointer
-                fc.get_f64(array + 2 * 8) as usize, // len
-            )
-            .to_vec(),
-        );
+        let address = fc.get_f64(array + 1 * 8) as u32;
+        let len = fc.get_f64(array + 2 * 8) as u32;
+        let reference = fc.store_value(JsValue::Memory { address, len });
         fc.set_u32(sp + 40, reference)
     } else {
         fc.store_string(sp + 40, "value_new_value".to_string());
     }
 
     // just always lie and say it worked
-    unsafe { fc.set_bool(sp + 48, true) };
+    fc.set_bool(sp + 48, true);
 }
 extern "C" fn go_js_value_length(_sp: u32) {
     println!("js_value_length")
