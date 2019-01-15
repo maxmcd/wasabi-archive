@@ -52,7 +52,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::exit;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{thread, time};
 use wasmtime_jit::{instantiate, ActionOutcome, Compiler, Namespace};
 
 static LOG_FILENAME_PREFIX: &str = "cranelift.dbg.";
@@ -148,6 +149,8 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
         data = wabt::wat2wasm(data).map_err(|err| String::from(err.description()))?;
     }
 
+    let mut c = Box::new(compiler);
+
     let mut namespace = Namespace::new();
 
     let instance = resolver::instantiate_env().expect("Instantiate env");
@@ -161,7 +164,7 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
     // let index = resolver.instances.push(instance);
     // resolver.names.insert("go".to_owned(), index);
     let instantiate_timer = SystemTime::now();
-    let mut instance = instantiate(compiler, &data, &mut namespace).map_err(|e| e.to_string())?;
+    let mut instance = instantiate(&mut *c, &data, &mut namespace).map_err(|e| e.to_string())?;
     println!(
         "Instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
@@ -181,11 +184,19 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
             vmctx: _vmctx,
         }) => definition,
         Some(_) => panic!("exported item is not a linear memory",),
-        None => panic!("no export "),
+        None => match instance.lookup("memory") {
+            Some(wasmtime_runtime::Export::Memory {
+                definition,
+                memory: _memory,
+                vmctx: _vmctx,
+            }) => definition,
+            Some(_) => panic!("exported item is not a linear memory",),
+            None => panic!("no memory export found"),
+        },
     };
     // host_state.definition = Some(definition);
 
-    let index = namespace.instance(None, instance);
+    let index = namespace.instance(Some("main"), instance);
     {
         let instance = &mut namespace.instances[go_index];
         let host_state = instance
@@ -209,18 +220,50 @@ fn handle_module(compiler: &mut Compiler, args: &Args, path: &Path) -> Result<()
     //     .map_err(|e| e.to_string())?;
 
     // resolver::start_event_loop();
-    let invoke_timer = SystemTime::now();
+    let mut function_name = "run";
+    let mut one_chance = true;
     if let Some(ref f) = args.flag_invoke {
-        match namespace
-            .invoke(compiler, index, f, &[])
-            .map_err(|e| e.to_string())?
-        {
-            ActionOutcome::Returned { .. } => {}
-            ActionOutcome::Trapped { message } => {
-                return Err(format!("Trap from within function {}: {}", f, message));
+        let invoke_timer = SystemTime::now();
+        loop {
+            println!("Running {:?}", function_name);
+            match namespace
+                .invoke(&mut *c, index, function_name, &[])
+                .map_err(|e| e.to_string())?
+            {
+                ActionOutcome::Returned { .. } => {}
+                ActionOutcome::Trapped { message } => {
+                    return Err(format!("Trap from within function {}: {}", f, message));
+                }
             }
+            function_name = "resume";
+            let instance = &mut namespace.instances[go_index];
+            let host_state = instance
+                .host_state()
+                .downcast_mut::<resolver::SharedState>()
+                .expect("not a thing");
+            if host_state.should_resume == true {
+                host_state.should_resume = false;
+                continue;
+            }
+            if let Some(callback) = host_state.callback_heap.pop() {
+                let sleep_time = time::Duration::from_millis((callback.time - ms_epoch()) as u64);
+                thread::sleep(sleep_time);
+                continue;
+            }
+            if one_chance == true {
+                one_chance = false;
+                continue;
+            }
+            break;
         }
+        println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
     }
-    println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
+
     Ok(())
+}
+
+fn ms_epoch() -> i64 {
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
+    since_the_epoch.as_secs() as i64 * 1000 + since_the_epoch.subsec_nanos() as i64 / 1_000_000
 }

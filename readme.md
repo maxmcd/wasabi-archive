@@ -21,3 +21,12 @@ Cranelift and Wasmtime are used for the WebAssembly runtime.
 - Mozilla WASM compiler. (look out for soon-to-be-open-sourced fastly runtime) <br /> https://github.com/CraneStation/cranelift
 - Fastly wasm talk <br /> https://www.youtube.com/watch?v=FkM1L8-qcjU
 
+## Http poll
+
+
+# make request -> ref
+# of body send chunks w/ ref -> 
+# ## response here needs to be async or we lock the stack
+# <- response
+# go could just poll for now?
+# could even use a shared memory location and a signal bit
