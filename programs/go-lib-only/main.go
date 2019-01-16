@@ -1,21 +1,22 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"time"
+	// "github.com/maxmcd/wasm-servers/gowasm"
 )
 
 func main() {
-	// foo := time.Now()
-	// _ = foo
-	fmt.Println("does this work?")
+	foo := time.Now()
+	fmt.Println("does this work?", foo)
 
-	// byt := make([]byte, 10)
-	// _, err := rand.Read(byt)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fmt.Println(byt)
+	byt := make([]byte, 10)
+	_, err := rand.Read(byt)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(byt)
 	go func() {
 		fmt.Println("within a goroutine")
 	}()

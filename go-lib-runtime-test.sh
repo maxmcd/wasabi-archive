@@ -10,5 +10,5 @@ cd ../programs/go-lib-only
 GOOS=js GOARCH=wasm go1.12beta1 build -o go-lib-only.wasm
 
 cd ../..
-RUST_BACKTRACE=full ./runtime/target/release/runtime --invoke=run \
+RUST_BACKTRACE=full ./runtime/target/release/runtime \
     ./programs/go-lib-only/go-lib-only.wasm

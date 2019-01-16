@@ -8,16 +8,15 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::process::exit;
 use std::rc::Rc;
 use std::slice;
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{str, thread};
+use std::{str, thread, time};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
-use wasmtime_jit::InstantiationError;
+use wasmtime_jit::{instantiate, ActionOutcome, Compiler, InstantiationError, Namespace};
 use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
 
 struct FuncContext {
@@ -26,13 +25,15 @@ struct FuncContext {
 
 #[derive(Debug)]
 enum JsValue {
+    // Likely can avoid Vec and String entirely
+    // just reference the memory
     Bytes(Vec<u8>),
     String(String),
     Memory { address: i32, len: i32 },
     FuncWrapper { id: i32 },
     Int(i32),
     Int64(i64),
-    Undefined,
+    PendingEvent,
     True,
     False,
     Array(Vec<JsValue>),
@@ -51,8 +52,8 @@ struct PendingEvent {
 }
 
 #[derive(Debug, Eq)]
-pub struct Callback {
-    pub time: i64,
+struct Callback {
+    time: i64,
     id: i32,
 }
 
@@ -74,20 +75,32 @@ impl PartialEq for Callback {
 }
 
 #[derive(Debug)]
-pub struct SharedState {
-    pub definition: Option<*mut VMMemoryDefinition>,
-    pub result_sender: Option<mpsc::Sender<String>>,
+struct SharedState {
+    definition: Option<*mut VMMemoryDefinition>,
+    result_sender: Option<mpsc::Sender<String>>,
     values: Vec<JsValue>,
     envvars: HashMap<String, String>,
     pending_event: PendingEvent,
-    pub should_resume: bool,
+    exited: bool,
     next_callback_timeout_id: i32,
-    pub callback_heap: BinaryHeap<Callback>,
-    pub callback_map: HashMap<i32, bool>,
+    callback_heap: BinaryHeap<Callback>,
+    callback_map: HashMap<i32, bool>,
 }
 impl SharedState {
     fn new() -> Self {
         Self {
+            callback_heap: BinaryHeap::new(),
+            callback_map: HashMap::new(),
+            definition: None,
+            envvars: HashMap::new(),
+            exited: false,
+            next_callback_timeout_id: 1,
+            pending_event: PendingEvent {
+                null: true,
+                id: 0,
+                len: 0,
+            },
+            result_sender: None,
             values: vec![
                 JsValue::NaN,    // NaN,
                 JsValue::Int(0), // 0,
@@ -98,18 +111,6 @@ impl SharedState {
                 JsValue::Mem,    // this._inst.exports.mem,
                 JsValue::This,   // this,
             ],
-            envvars: HashMap::new(),
-            result_sender: None,
-            definition: None,
-            pending_event: PendingEvent {
-                id: 0,
-                len: 0,
-                null: false,
-            },
-            should_resume: false,
-            next_callback_timeout_id: 1,
-            callback_heap: BinaryHeap::new(),
-            callback_map: HashMap::new(),
         }
     }
 }
@@ -153,7 +154,6 @@ impl FuncContext {
         }
     }
     fn reflect_get(&self, target: &JsValue, property_key: &JsValue) -> JsValue {
-        println!("reflect_get {:?} {:?}", target, property_key);
         match (target, property_key) {
             (JsValue::Global, JsValue::String(s)) => JsValue::String(s.to_string()),
             (JsValue::String(t), JsValue::String(pk)) => match (t.as_ref(), pk.as_ref()) {
@@ -167,9 +167,14 @@ impl FuncContext {
                     //     O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1 },
                     // unused
                 }
-                ("this._pendingEvent", "id") => JsValue::Int(self.shared_state().pending_event.id),
-                ("this._pendingEvent", "this") => JsValue::This,
-                ("this._pendingEvent", "args") => JsValue::Array(vec![
+                _ => {
+                    panic!("Not implemented {:?} {:?}", target, property_key);
+                }
+            },
+            (JsValue::PendingEvent, JsValue::String(a)) => match a.as_ref() {
+                "id" => JsValue::Int(self.shared_state().pending_event.id),
+                "this" => JsValue::This,
+                "args" => JsValue::Array(vec![
                     JsValue::Null,
                     JsValue::Int(self.shared_state().pending_event.len),
                 ]),
@@ -184,6 +189,8 @@ impl FuncContext {
             (JsValue::This, JsValue::String(s)) => {
                 if s == "_pendingEvent" && self.shared_state().pending_event.null {
                     JsValue::Null
+                } else if s == "_pendingEvent" {
+                    JsValue::PendingEvent
                 } else {
                     JsValue::String(format!("this.{}", s).to_string())
                 }
@@ -194,7 +201,6 @@ impl FuncContext {
                 }
                 match v[*i as usize] {
                     JsValue::Int(i) => JsValue::Int(i),
-                    JsValue::Undefined => JsValue::Undefined,
                     JsValue::Null => JsValue::Null,
                     _ => panic!("Not implemented {:?} {:?}", target, property_key),
                 }
@@ -207,10 +213,10 @@ impl FuncContext {
     fn reflect_set(&self, target: &JsValue, property_key: &str, value: &JsValue) {
         match (target, property_key, value) {
             (JsValue::This, "_pendingEvent", JsValue::Null) => {
-                self.shared_state().should_resume = false;
-                // self.shared_state().next_callback_timeout_id = 0;
+                // sets pending event to null but expects the object
+                // to still exist so we ignore this for now
             }
-            (JsValue::String(_), "result", JsValue::Null) => {}
+            (JsValue::PendingEvent, "result", JsValue::Null) => {}
             _ => panic!(
                 "Not implemented {:?} {:?} {:?}",
                 target, property_key, value
@@ -253,7 +259,6 @@ impl FuncContext {
                         );
                         self.shared_state().pending_event.len = *len;
                         self.shared_state().pending_event.null = false;
-                        self.shared_state().should_resume = true;
                         if let JsValue::FuncWrapper { id } = argument_list[5].0.unwrap() {
                             self.shared_state().pending_event.id = *id
                         }
@@ -379,9 +384,6 @@ impl FuncContext {
                 }
                 self.set_f64(addr, int as f64);
             }
-            JsValue::Undefined => {
-                self.set_f64(addr, 0 as f64);
-            }
             JsValue::Null => {
                 self.set_u32(addr + 4, nan_head);
                 self.set_u32(addr, 2);
@@ -485,19 +487,10 @@ fn u32_as_u8_le(x: u32) -> [u8; 4] {
     ]
 }
 
-fn ms_epoch() -> i64 {
+fn epoch_ns() -> i64 {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    since_the_epoch.as_secs() as i64 * 1000 + since_the_epoch.subsec_nanos() as i64 / 1_000_000
-}
-
-#[allow(clippy::print_stdout)]
-unsafe extern "C" fn env_println(start: usize, len: usize, vmctx: *mut VMContext) {
-    let definition = FuncContext::new(vmctx).definition();
-    let memory_def = &*definition;
-    let message =
-        &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..start + len];
-    println!("{:?}", str::from_utf8(&message).unwrap());
+    since_the_epoch.as_secs() as i64 * 1_000_000_000 + since_the_epoch.subsec_nanos() as i64
 }
 
 extern "C" fn go_debug(_sp: i32) {
@@ -511,15 +504,13 @@ extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 16, id);
     fc.shared_state().next_callback_timeout_id += 1;
     fc.shared_state().callback_heap.push(Callback {
-        time: ms_epoch() + count,
+        time: epoch_ns() + count * 1_000_000,
         id: id,
     });
     fc.shared_state().callback_map.insert(id, true);
-    println!("schedule callback at time {:?} {:?}", count, id);
 }
 extern "C" fn go_clear_timeout_event(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    println!("go_clear_timeout_event");
     let id = fc.get_i32(sp + 8);
     fc.shared_state().callback_map.remove(&id);
 }
@@ -574,21 +565,6 @@ extern "C" fn go_js_value_call(sp: i32, vmctx: *mut VMContext) {
     // TODO: catch error and error
     fc.store_value(sp + 56, result);
     fc.set_bool(sp + 64, true);
-
-    // if object == "crypto" && method == "getRandomValues" {
-    //     let (address, len) = match fc.values()[fc.get_i32(array + 0 * 8) as usize] {
-    //         JsValue::Memory { address, len } => (address, len),
-    //         _ => panic!("getRandomValues should write bytes"),
-    //     };
-    //     thread_rng().fill(fc.mut_mem_slice(address as usize, (address + len) as usize));
-    // }
-    // // Uint32Array is actually "global", but we don't mock the instantiated _values
-    // // should likely populate the array to make this clearer
-    // if object == "Uint32Array" && method == "_makeFuncWrapper" {
-    //     println!("makefunc call {}", fc.get_f64(array + 0 * 8));
-    //     fc.shared_state().should_resume = true;
-    //     fc.shared_state().pending_event_id = fc.get_f64(array + 0 * 8) as i32;
-    // }
 }
 extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
@@ -600,18 +576,6 @@ extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
     let result = fc.reflect_construct(v, args);
     fc.store_value(sp + 40, result);
     fc.set_bool(sp + 48, true);
-    // let len = fc.get_i32(sp + 16 + 8);
-    // let name = fc.load_string(sp + 8);
-    // println!("js_value_new {} {} {}", name, array, len);
-    // if name == "Uint8Array" {
-    //     let address = fc.get_f64(array + 1 * 8) as i32;
-    //     let len = fc.get_f64(array + 2 * 8) as i32;
-    //     fc.store_value(sp + 40, JsValue::Memory { address, len });
-    // } else {
-    //     fc.store_string(sp + 40, "value_new_value".to_string());
-    // }
-
-    // just always lie and say it worked
 }
 extern "C" fn go_js_value_length(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
@@ -654,8 +618,9 @@ unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
     if exit_code != 0 {
         println!("Wasm exited with a non-zero exit code: {}", exit_code);
     }
-    exit(exit_code);
+    fc.shared_state().exited = true;
 }
+
 unsafe extern "C" fn go_start_request(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     println!("{:?}", fc.get_string(sp + 8));
@@ -684,7 +649,7 @@ unsafe extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
 
 unsafe extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    fc.set_i64(sp + 8, ms_epoch());
+    fc.set_i64(sp + 8, epoch_ns());
 }
 
 unsafe extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
@@ -727,7 +692,6 @@ unsafe extern "C" fn go_lookup_ip(sp: i32, vmctx: *mut VMContext) {
     let ips = resolve_host(&addr).unwrap();
     fc.set_bool(sp + 24 + 4, true);
     let mut byte_ips: Vec<Vec<u8>> = Vec::new();
-    println!("{:?}", ips);
     for ip in ips.iter() {
         match ip {
             IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
@@ -762,56 +726,6 @@ pub fn start_event_loop() -> mpsc::Sender<String> {
     });
 
     send
-}
-
-/// Return an instance implementing the "spectest" interface used in the
-/// spec testsuite.
-pub fn instantiate_env() -> Result<Instance, InstantiationError> {
-    let call_conv = isa::CallConv::triple_default(&HOST);
-    let pointer_type = types::Type::triple_pointer_type(&HOST);
-    let mut module = Module::new();
-    let mut finished_functions: PrimaryMap<DefinedFuncIndex, *const VMFunctionBody> =
-        PrimaryMap::new();
-
-    let sig = module.signatures.push(translate_signature(
-        ir::Signature {
-            params: vec![ir::AbiParam::new(types::I32), ir::AbiParam::new(types::I32)],
-            returns: vec![],
-            call_conv,
-        },
-        pointer_type,
-    ));
-    let func = module.functions.push(sig);
-    module
-        .exports
-        .insert("println".to_owned(), Export::Function(func));
-    finished_functions.push(env_println as *const VMFunctionBody);
-
-    let memory = module.memory_plans.push(MemoryPlan {
-        memory: Memory {
-            minimum: 16384,
-            maximum: None,
-            shared: false,
-        },
-        style: MemoryStyle::Dynamic {},
-        offset_guard_size: 65536,
-    });
-    module
-        .exports
-        .insert("memory".to_owned(), Export::Memory(memory));
-
-    let imports = Imports::none();
-    let data_initializers = Vec::new();
-    let signatures = PrimaryMap::new();
-
-    Instance::new(
-        Rc::new(module),
-        finished_functions.into_boxed_slice(),
-        imports,
-        &data_initializers,
-        signatures.into_boxed_slice(),
-        Box::new(SharedState::new()),
-    )
 }
 
 pub fn instantiate_go() -> Result<Instance, InstantiationError> {
@@ -966,4 +880,91 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
         signatures.into_boxed_slice(),
         Box::new(SharedState::new()),
     )
+}
+
+pub fn run(compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
+    let mut c = Box::new(compiler);
+    let mut namespace = Namespace::new();
+    let instance = instantiate_go().expect("Instantiate go");
+    let go_index = namespace.instance(Some("go"), instance);
+
+    let instantiate_timer = SystemTime::now();
+    let mut instance = instantiate(&mut *c, &data, &mut namespace).map_err(|e| e.to_string())?;
+    println!(
+        "Instantiation time: {:?}",
+        instantiate_timer.elapsed().unwrap()
+    );
+
+    let definition = match instance.lookup("mem") {
+        Some(wasmtime_runtime::Export::Memory {
+            definition,
+            memory: _memory,
+            vmctx: _vmctx,
+        }) => definition,
+        Some(_) => panic!("exported item is not a linear memory",),
+        None => panic!("no memory export found"),
+    };
+
+    let index = namespace.instance(Some("main"), instance);
+    {
+        let instance = &mut namespace.instances[go_index];
+        let host_state = instance
+            .host_state()
+            .downcast_mut::<SharedState>()
+            .expect("not a thing");
+        host_state.definition = Some(definition);
+        host_state.result_sender = Some(start_event_loop());
+    }
+
+    // resolver::start_event_loop();
+    let mut function_name = "run";
+    let invoke_timer = SystemTime::now();
+    loop {
+        match namespace
+            .invoke(&mut *c, index, function_name, &[])
+            .map_err(|e| e.to_string())?
+        {
+            ActionOutcome::Returned { .. } => {}
+            ActionOutcome::Trapped { message } => {
+                return Err(format!(
+                    "Trap from within function {}: {}",
+                    function_name, message
+                ));
+            }
+        }
+        function_name = "resume";
+        let instance = &mut namespace.instances[go_index];
+        let host_state = instance
+            .host_state()
+            .downcast_mut::<SharedState>()
+            .expect("not a thing");
+
+        if host_state.pending_event.null == false {
+            continue;
+        }
+        if let Some(callback) = host_state.callback_heap.pop() {
+            let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
+            thread::sleep(sleep_time);
+            continue;
+        }
+        if host_state.exited == false {
+            host_state.pending_event.id = 0;
+            continue;
+        }
+        break;
+    }
+    println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ms() {
+        println!("{:?}", epoch_ns());
+        println!("{:?}", 1547583539961031400i64);
+    }
 }
