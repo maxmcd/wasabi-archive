@@ -1,4 +1,4 @@
-# Wasm Runtime
+# Wasabi
 
-A webassembly runtime for Go
+A webassembly runtime designed for multitenancy
 

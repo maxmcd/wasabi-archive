@@ -5,4 +5,4 @@
 /go/.git
 *.git
 *node_modules
-runtime/target
+wasabi/target

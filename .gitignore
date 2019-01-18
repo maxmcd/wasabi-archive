@@ -3,6 +3,6 @@
 .DS_Store
 cmd/ts-asm/build
 node_modules
-runtime/target
+wasabi/target
 todo.md
 names.md

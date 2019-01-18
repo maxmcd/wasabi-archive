@@ -2,42 +2,42 @@ version: '3.3'
 
 services:
   go:
-    build: 
+    build:
       context: ./go
       dockerfile: Dockerfile
     image: maxmcd/wasm-servers:go
-    volumes: 
+    volumes:
       - shared:/go/src/github.com/maxmcd/wasm-servers/shared/
   go-print:
     build:
       context: ./programs/go-print
       dockerfile: Dockerfile
     image: maxmcd/wasm-servers:go-print
-    volumes: 
+    volumes:
       - shared:/go/src/github.com/maxmcd/wasm-servers/shared/
   go-fs:
     build:
       context: ./programs/go-fs
       dockerfile: Dockerfile
     image: maxmcd/wasm-servers:go-fs
-    volumes: 
+    volumes:
       - shared:/go/src/github.com/maxmcd/wasm-servers/shared/
   go-net:
     build:
       context: ./programs/go-net
       dockerfile: Dockerfile
     image: maxmcd/wasm-servers:go-net
-    volumes: 
+    volumes:
       - shared:/go/src/github.com/maxmcd/wasm-servers/shared/
-  runtime:
+  wasabi:
     build:
-      context: ./runtime
+      context: ./wasabi
       dockerfile: Dockerfile
-    image: maxmcd/wasm-servers:runtime
-    volumes: 
+    image: maxmcd/wasm-servers:wasabi
+    volumes:
       - shared:/opt/shared/
-      - /home/ubuntu/runtime-src:/opt/runtime/src/
-      - target:/opt/runtime/target/
+      - /home/ubuntu/wasabi-src:/opt/wasabi/src/
+      - target:/opt/wasabi/target/
 
 volumes:
   shared:
