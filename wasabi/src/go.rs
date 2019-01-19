@@ -16,12 +16,10 @@ use std::{str, thread, time};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
-use wasmtime_jit::{instantiate, ActionOutcome, Compiler, InstantiationError, Namespace};
+use wasmtime_jit::{
+    instantiate, ActionOutcome, Compiler, InstantiationError, Namespace, RuntimeValue,
+};
 use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
-
-struct FuncContext {
-    vmctx: *mut VMContext,
-}
 
 #[derive(Debug)]
 enum JsValue {
@@ -33,6 +31,7 @@ enum JsValue {
     FuncWrapper { id: i32 },
     Int(i32),
     Int64(i64),
+    Undefined,
     PendingEvent,
     True,
     False,
@@ -115,11 +114,16 @@ impl SharedState {
     }
 }
 
+struct FuncContext {
+    vmctx: *mut VMContext,
+}
 impl FuncContext {
     fn new(vmctx: *mut VMContext) -> Self {
         Self { vmctx: vmctx }
     }
+}
 
+impl ContextHelpers for FuncContext {
     fn shared_state(&self) -> &mut SharedState {
         unsafe {
             (&mut *self.vmctx)
@@ -128,10 +132,27 @@ impl FuncContext {
                 .unwrap()
         }
     }
+    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+        unsafe {
+            let memory_def = &*self.definition();
+            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
+        }
+    }
+    fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
+        unsafe {
+            let memory_def = &*self.definition();
+            &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..end]
+        }
+    }
+}
 
-    unsafe fn definition(&self) -> *mut VMMemoryDefinition {
+trait ContextHelpers {
+    fn shared_state(&self) -> &mut SharedState;
+    fn definition(&self) -> *mut VMMemoryDefinition {
         self.shared_state().definition.unwrap()
     }
+    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8];
+    fn mem_slice(&self, start: usize, end: usize) -> &[u8];
     fn result_sender(&self) -> &mpsc::Sender<String> {
         self.shared_state()
             .result_sender
@@ -144,21 +165,18 @@ impl FuncContext {
     fn envvars(&self) -> &mut HashMap<String, String> {
         &mut self.shared_state().envvars
     }
-    fn get_i32(&self, sp: i32) -> i32 {
-        let spu = sp as usize;
-        unsafe {
-            let memory_def = &*self.definition();
-            as_i32_le(
-                &slice::from_raw_parts(memory_def.base, memory_def.current_length)[spu..spu + 8],
-            )
-        }
-    }
     fn reflect_get(&self, target: &JsValue, property_key: &JsValue) -> JsValue {
         match (target, property_key) {
             (JsValue::Global, JsValue::String(s)) => JsValue::String(s.to_string()),
             (JsValue::String(t), JsValue::String(pk)) => match (t.as_ref(), pk.as_ref()) {
                 ("fs", "constants") => JsValue::String("fs.constants".to_string()),
                 ("fs", "write") => JsValue::String("fs.write".to_string()),
+                ("Date", "getTimezoneOffset") => {
+                    JsValue::String("Date.getTimezoneOffset".to_string())
+                }
+                ("crypto", "getRandomValues") => {
+                    JsValue::String("crypto.getRandomValues".to_string())
+                } // Always UTC
                 ("fs.constants", _) => {
                     JsValue::Int(-1)
                     // wasm_exec.js:42
@@ -237,6 +255,21 @@ impl FuncContext {
                     let id = argument_list[0].1.unwrap();
                     Some(JsValue::FuncWrapper { id: id })
                 }
+                "crypto.getRandomValues" => {
+                    // String("crypto")[(
+                    //     Some(Memory {
+                    //         address: 201441472,
+                    //         len: 10,
+                    //     }),
+                    //     None,
+                    // )]
+                    if let JsValue::Memory { address, len } = argument_list[0].0.unwrap() {
+                        thread_rng()
+                            .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
+                    }
+                    Some(JsValue::Undefined)
+                }
+                "Date.getTimezoneOffset" => Some(JsValue::Int(0)), // Always UTC
                 "fs.write" => {
                     // String("fs write")
                     // String("fs")
@@ -298,6 +331,7 @@ impl FuncContext {
                     address: argument_list[1].1.unwrap(),
                     len: argument_list[2].1.unwrap(),
                 }),
+                "Date" => Some(JsValue::String("Date".to_string())),
                 _ => None,
             },
             _ => None,
@@ -306,6 +340,10 @@ impl FuncContext {
         } else {
             panic!("Not implemented {:?} {:?}", target, argument_list);
         }
+    }
+    fn get_i32(&self, sp: i32) -> i32 {
+        let spu = sp as usize;
+        as_i32_le(self.mem_slice(spu, spu + 8))
     }
     fn get_i64(&self, sp: i32) -> i64 {
         let spu = sp as usize;
@@ -328,11 +366,7 @@ impl FuncContext {
         self._get_bytes(saddr, ln)
     }
     fn _get_bytes(&self, address: usize, ln: usize) -> &[u8] {
-        let memory_def = unsafe { &*self.definition() };
-        unsafe {
-            &slice::from_raw_parts(memory_def.base, memory_def.current_length)
-                [address..address + ln]
-        }
+        self.mem_slice(address, address + ln)
     }
     fn get_string(&self, sp: i32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
@@ -348,12 +382,6 @@ impl FuncContext {
     fn set_u32(&self, sp: i32, num: u32) {
         self.mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&u32_as_u8_le(num));
-    }
-    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
-        unsafe {
-            let memory_def = &*self.definition();
-            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
-        }
     }
     fn set_bool(&self, addr: i32, value: bool) {
         let val = if value { 1 } else { 0 };
@@ -520,7 +548,7 @@ extern "C" fn go_syscall(_sp: i32) {
 
 extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    fc.store_value(sp + 24, JsValue::String(fc.load_string(sp + 8)));
+    fc.store_value(sp + 24, JsValue::String(fc.get_string(sp + 8).to_string()));
 }
 
 extern "C" fn go_js_value_get(sp: i32, vmctx: *mut VMContext) {
@@ -882,7 +910,44 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     )
 }
 
-pub fn run(compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
+fn strptr(s: &String, offset: usize, mem: &mut [u8]) -> (usize, usize) {
+    let ptr = offset;
+    mem[offset..offset + s.len()].copy_from_slice(s.as_bytes());
+    mem[offset + s.len()] = 0u8;
+    (ptr, offset + s.len() + (8 - (s.len() % 8)))
+}
+
+fn load_args_from_mem(args: Vec<String>, mem: &mut [u8]) -> (i32, i32) {
+    let mut offset = 4096;
+    let argc = args.len() as i32;
+    let mut argv_ptrs = Vec::new();
+    for arg in &args {
+        let (ptr, o) = strptr(arg, offset, mem);
+        offset = o;
+        argv_ptrs.push(ptr)
+    }
+
+    // TODO: envvars
+
+    let out = offset;
+    for argv_ptr in &argv_ptrs {
+        mem[offset..offset + 4].copy_from_slice(&u32_as_u8_le(*argv_ptr as u32));
+        mem[offset + 4..offset + 4 + 4].copy_from_slice(&u32_as_u8_le(0));
+        offset += 8;
+    }
+    (argc, out as i32)
+}
+
+fn load_args_from_definition(args: Vec<String>, definition: *mut VMMemoryDefinition) -> (i32, i32) {
+    let mut mem = unsafe {
+        let memory_def = &*definition;
+        println!("{:?}", memory_def.current_length);
+        &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[0..16384]
+    };
+    load_args_from_mem(args, &mut mem)
+}
+
+pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
     let mut c = Box::new(compiler);
     let mut namespace = Namespace::new();
     let instance = instantiate_go().expect("Instantiate go");
@@ -916,12 +981,14 @@ pub fn run(compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
         host_state.result_sender = Some(start_event_loop());
     }
 
+    let (argc, argv) = load_args_from_definition(args, definition);
     // resolver::start_event_loop();
     let mut function_name = "run";
+    let mut args = vec![RuntimeValue::I32(argc), RuntimeValue::I32(argv)];
     let invoke_timer = SystemTime::now();
     loop {
         match namespace
-            .invoke(&mut *c, index, function_name, &[])
+            .invoke(&mut *c, index, function_name, &args)
             .map_err(|e| e.to_string())?
         {
             ActionOutcome::Returned { .. } => {}
@@ -933,6 +1000,7 @@ pub fn run(compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
             }
         }
         function_name = "resume";
+        args = vec![];
         let instance = &mut namespace.instances[go_index];
         let host_state = instance
             .host_state()
@@ -961,10 +1029,85 @@ pub fn run(compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
+
+    struct TestVMContext {
+        shared_state: Box<dyn Any>,
+        mem: Box<dyn Any>,
+    }
+
+    struct TestContext {
+        vmctx: *mut TestVMContext,
+        // place the testcontext here so that it has the same
+        // lifetime as the test context?
+        #[allow(dead_code)]
+        v: TestVMContext,
+    }
+
+    impl TestContext {
+        fn new(vmctx: *mut TestVMContext, v: TestVMContext) -> Self {
+            Self { vmctx: vmctx, v: v }
+        }
+    }
+    impl ContextHelpers for TestContext {
+        fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+            unsafe { &mut (&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
+        }
+        fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
+            unsafe { &(&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
+        }
+
+        fn shared_state(&self) -> &mut SharedState {
+            unsafe {
+                (&mut *self.vmctx)
+                    .shared_state
+                    .downcast_mut::<SharedState>()
+                    .unwrap()
+            }
+        }
+    }
+
+    fn test_context() -> TestContext {
+        let ss = SharedState::new();
+        let mem: Vec<u8> = vec![0; 100];
+        let mut vmc = TestVMContext {
+            shared_state: Box::new(ss),
+            mem: Box::new(mem),
+        };
+        let tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
+        tc.values(); //prevents the mem from being freed?
+        tc
+    }
 
     #[test]
-    fn ms() {
-        println!("{:?}", epoch_ns());
-        println!("{:?}", 1547583539961031400i64);
+    fn test_args_and_ev() {
+        let mut mem: Vec<u8> = vec![0; 10000];
+        let args = vec![
+            "/var/folders/nn/q8p1tdps0jlfnll5nc8ydmwc0000gn/T/go-build020729976/b001/exe/main"
+                .to_string(),
+        ];
+        let (argc, argv) = load_args_from_mem(args, &mut mem);
+        let answer: Vec<u8> = vec![
+            47, 118, 97, 114, 47, 102, 111, 108, 100, 101, 114, 115, 47, 110, 110, 47, 113, 56,
+            112, 49, 116, 100, 112, 115, 48, 106, 108, 102, 110, 108, 108, 53, 110, 99, 56, 121,
+            100, 109, 119, 99, 48, 48, 48, 48, 103, 110, 47, 84, 47, 103, 111, 45, 98, 117, 105,
+            108, 100, 48, 50, 48, 55, 50, 57, 57, 55, 54, 47, 98, 48, 48, 49, 47, 101, 120, 101,
+            47, 109, 97, 105, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(&mem[4096..4192], &answer[..]);
+        assert_eq!(argc, 1);
+        assert_eq!(argv, 4184);
     }
+
+    #[test]
+    fn i32_get_and_set() {
+        let tc = test_context();
+        tc.set_i32(0, 2147483647);
+        assert_eq!(2147483647, tc.get_i32(0));
+        tc.set_i32(0, -2147483647);
+        assert_eq!(-2147483647, tc.get_i32(0));
+    }
+
+    // #[test]
+    // fn ms() {}
 }

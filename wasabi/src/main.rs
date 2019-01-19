@@ -71,7 +71,7 @@ fn main() {
     if cfg!(debug_assertions) {
         flag_builder.enable("enable_verifier").unwrap();
     }
-    flag_builder.set("opt_level", "best").unwrap();
+    // flag_builder.set("opt_level", "best").unwrap();
 
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
     let mut compiler = Compiler::new(isa);
@@ -80,10 +80,10 @@ fn main() {
         println!("Runtime expects a wasm binary or wat file as the first argument");
         exit(1);
     }
-    let filename = &args[1];
+    let filename = args[1].clone();
 
     let path = Path::new(&filename);
-    match handle_module(&mut compiler, path) {
+    match handle_module(args, &mut compiler, path) {
         Ok(()) => {}
         Err(message) => {
             let name = path.as_os_str().to_string_lossy();
@@ -93,12 +93,12 @@ fn main() {
     }
 }
 
-fn handle_module(compiler: &mut Compiler, path: &Path) -> Result<(), String> {
+fn handle_module(args: Vec<String>, compiler: &mut Compiler, path: &Path) -> Result<(), String> {
     let mut data =
         read_to_end(path.to_path_buf()).map_err(|err| String::from(err.description()))?;
     // if data is using wat-format, first convert data to wasm
     if !data.starts_with(&[b'\0', b'a', b's', b'm']) {
         data = wabt::wat2wasm(data).map_err(|err| String::from(err.description()))?;
     }
-    go::run(compiler, data)
+    go::run(args, compiler, data)
 }

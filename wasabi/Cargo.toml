@@ -1,5 +1,5 @@
 [package]
-name = "runtime"
+name = "wasabi"
 version = "0.1.0"
 authors = ["maxmcd <m@xmcd.me>"]
 
