@@ -26,6 +26,7 @@ extern crate cranelift_native;
 extern crate cranelift_wasm;
 extern crate docopt;
 extern crate file_per_thread_logger;
+extern crate mio;
 extern crate pretty_env_logger;
 extern crate rand;
 extern crate reqwest;

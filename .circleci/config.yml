@@ -3,7 +3,7 @@ version: 2
 jobs:
   build:
     docker:
-      - image: maxmcd/wasm-servers:circleci
+      - image: maxmcd/wasabi:circleci
     steps:
       - checkout
       - setup_remote_docker

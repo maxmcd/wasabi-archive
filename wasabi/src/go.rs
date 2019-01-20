@@ -3,14 +3,16 @@ use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
+use mio;
+use mio::net::TcpListener;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
+use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::slice;
-use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{str, thread, time};
 use target_lexicon::HOST;
@@ -25,29 +27,30 @@ use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDef
 enum JsValue {
     // Likely can avoid Vec and String entirely
     // just reference the memory
+    Array(Vec<JsValue>),
     Bytes(Vec<u8>),
-    String(String),
-    Memory { address: i32, len: i32 },
+    False,
     FuncWrapper { id: i32 },
+    Global,
     Int(i32),
     Int64(i64),
-    Undefined,
-    PendingEvent,
-    True,
-    False,
-    Array(Vec<JsValue>),
-    NaN,
-    Null,
-    Global,
     Mem,
+    Memory { address: i32, len: i32 },
+    NaN,
+    NetListener,
+    Null,
+    PendingEvent,
+    String(String),
     This,
+    True,
+    Undefined,
 }
 
 #[derive(Debug)]
 struct PendingEvent {
     id: i32,
-    len: i32,
     null: bool,
+    args: Option<Vec<JsValue>>,
 }
 
 #[derive(Debug, Eq)]
@@ -74,32 +77,120 @@ impl PartialEq for Callback {
 }
 
 #[derive(Debug)]
+struct NetPool {
+    pointer: usize,
+    items: Vec<Option<NetTcp>>,
+}
+
+impl NetPool {
+    fn new() -> Self {
+        Self {
+            pointer: 0,
+            items: Vec::new(),
+        }
+    }
+    fn add(&mut self, nt: NetTcp) -> usize {
+        let id = self.pointer;
+        if self.pointer == self.items.len() {
+            self.items.push(Some(nt));
+            self.pointer += 1;
+        } else {
+            self.items[self.pointer] = Some(nt);
+            for ref item in self.items[self.pointer + 1..].iter() {
+                self.pointer += 1;
+                match item {
+                    None => {
+                        return self.pointer;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        id
+    }
+    fn next_id(&self) -> usize {
+        self.pointer
+    }
+    fn get(&self, i: usize) -> Option<&Option<NetTcp>> {
+        self.items.get(i)
+    }
+    fn get_ref(&self, i: usize) -> Option<&NetTcp> {
+        match self.items.get(i) {
+            Some(ontcp) => match ontcp {
+                Some(ntcp) => Some(ntcp),
+                None => None,
+            },
+            None => None,
+        }
+    }
+    fn get_listener_ref(&self, i: usize) -> Option<&mio::net::TcpListener> {
+        match self.get_ref(i) {
+            Some(ntcp) => match ntcp {
+                NetTcp::Listener(listener) => Some(&listener),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    fn get_stream_ref(&self, i: usize) -> Option<&mio::net::TcpStream> {
+        match self.get_ref(i) {
+            Some(ntcp) => match ntcp {
+                NetTcp::Stream(s) => Some(&s),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.pointer == 0
+    }
+    fn remove(&mut self, i: usize) {
+        if i > self.items.len() {
+            panic!("index out of range")
+        }
+        self.items.remove(i);
+        if i < self.pointer {
+            self.pointer = i
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NetTcp {
+    Listener(mio::net::TcpListener),
+    Stream(mio::net::TcpStream),
+}
+
+#[derive(Debug)]
 struct SharedState {
     definition: Option<*mut VMMemoryDefinition>,
-    result_sender: Option<mpsc::Sender<String>>,
     values: Vec<JsValue>,
-    envvars: HashMap<String, String>,
     pending_event: PendingEvent,
     exited: bool,
+    poll: mio::Poll,
+    net_pool: NetPool,
+    net_callback_id: i32,
     next_callback_timeout_id: i32,
     callback_heap: BinaryHeap<Callback>,
     callback_map: HashMap<i32, bool>,
 }
+
 impl SharedState {
     fn new() -> Self {
         Self {
             callback_heap: BinaryHeap::new(),
             callback_map: HashMap::new(),
             definition: None,
-            envvars: HashMap::new(),
             exited: false,
+            poll: mio::Poll::new().unwrap(),
+            net_pool: NetPool::new(),
+            net_callback_id: 0,
             next_callback_timeout_id: 1,
             pending_event: PendingEvent {
                 null: true,
                 id: 0,
-                len: 0,
+                args: Some(Vec::new()),
             },
-            result_sender: None,
             values: vec![
                 JsValue::NaN,    // NaN,
                 JsValue::Int(0), // 0,
@@ -153,17 +244,8 @@ trait ContextHelpers {
     }
     fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8];
     fn mem_slice(&self, start: usize, end: usize) -> &[u8];
-    fn result_sender(&self) -> &mpsc::Sender<String> {
-        self.shared_state()
-            .result_sender
-            .as_ref()
-            .expect("I should have a sender")
-    }
     fn values(&self) -> &mut Vec<JsValue> {
         &mut self.shared_state().values
-    }
-    fn envvars(&self) -> &mut HashMap<String, String> {
-        &mut self.shared_state().envvars
     }
     fn reflect_get(&self, target: &JsValue, property_key: &JsValue) -> JsValue {
         match (target, property_key) {
@@ -192,10 +274,14 @@ trait ContextHelpers {
             (JsValue::PendingEvent, JsValue::String(a)) => match a.as_ref() {
                 "id" => JsValue::Int(self.shared_state().pending_event.id),
                 "this" => JsValue::This,
-                "args" => JsValue::Array(vec![
-                    JsValue::Null,
-                    JsValue::Int(self.shared_state().pending_event.len),
-                ]),
+                "args" => {
+                    if let Some(args) = self.shared_state().pending_event.args.take() {
+                        self.shared_state().pending_event.null = true;
+                        JsValue::Array(args)
+                    } else {
+                        JsValue::Array(vec![])
+                    }
+                }
                 _ => {
                     panic!("Not implemented {:?} {:?}", target, property_key);
                 }
@@ -204,6 +290,7 @@ trait ContextHelpers {
                 // mem.buffer
                 JsValue::String("mem.buffer".to_string())
             }
+            (JsValue::NetListener, _) => JsValue::NetListener,
             (JsValue::This, JsValue::String(s)) => {
                 if s == "_pendingEvent" && self.shared_state().pending_event.null {
                     JsValue::Null
@@ -233,6 +320,7 @@ trait ContextHelpers {
             (JsValue::This, "_pendingEvent", JsValue::Null) => {
                 // sets pending event to null but expects the object
                 // to still exist so we ignore this for now
+                println!("set pending event to null");
             }
             (JsValue::PendingEvent, "result", JsValue::Null) => {}
             _ => panic!(
@@ -248,6 +336,12 @@ trait ContextHelpers {
         argument_list: Vec<(Option<&JsValue>, Option<i32>)>,
     ) -> JsValue {
         if let Some(r) = match target {
+            JsValue::NetListener => {
+                if let JsValue::FuncWrapper { id } = argument_list[0].0.unwrap() {
+                    self.shared_state().net_callback_id = *id;
+                }
+                Some(JsValue::Undefined)
+            }
             JsValue::String(t) => match t.as_ref() {
                 "this._makeFuncWrapper" => {
                     // this could be a boxed FnMut value for more flexbility
@@ -290,7 +384,8 @@ trait ContextHelpers {
                             str::from_utf8(self._get_bytes(*address as usize, *len as usize))
                                 .unwrap()
                         );
-                        self.shared_state().pending_event.len = *len;
+                        self.shared_state().pending_event.args =
+                            Some(vec![JsValue::Null, JsValue::Int(*len)]);
                         self.shared_state().pending_event.null = false;
                         if let JsValue::FuncWrapper { id } = argument_list[5].0.unwrap() {
                             self.shared_state().pending_event.id = *id
@@ -332,6 +427,7 @@ trait ContextHelpers {
                     len: argument_list[2].1.unwrap(),
                 }),
                 "Date" => Some(JsValue::String("Date".to_string())),
+                "net_listener" => Some(JsValue::NetListener),
                 _ => None,
             },
             _ => None,
@@ -607,37 +703,21 @@ extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
 }
 extern "C" fn go_js_value_length(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    // args, length
-    fc.set_i64(sp + 16, 2);
+    let v = fc.load_value(sp + 8);
+    let ln = match v.0 {
+        Some(jsv) => match jsv {
+            JsValue::Array(v) => v.len(),
+            _ => 0,
+        },
+        None => 0,
+    };
+    fc.set_i64(sp + 16, ln as i64);
 }
 extern "C" fn go_js_value_prepare_string(_sp: i32) {
     println!("js_value_prepare_string")
 }
 extern "C" fn go_js_value_load_string(_sp: i32) {
     println!("js_value_load_string")
-}
-
-extern "C" fn go_set_env(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    let key = fc.get_string(sp + 8);
-    let value = fc.get_string(sp + 24);
-    let envvars = fc.envvars();
-    envvars.insert(key.to_owned(), value.to_owned());
-}
-
-extern "C" fn go_get_env(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    let key = fc.get_string(sp + 8);
-    let envvars = fc.envvars();
-    match envvars.get(key) {
-        Some(value) => {
-            fc.set_bool(sp + 24, true);
-            fc.store_string(sp + 28, value.to_string());
-        }
-        None => {
-            fc.set_bool(sp + 24, false);
-        }
-    }
 }
 
 unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
@@ -647,19 +727,6 @@ unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
         println!("Wasm exited with a non-zero exit code: {}", exit_code);
     }
     fc.shared_state().exited = true;
-}
-
-unsafe extern "C" fn go_start_request(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    println!("{:?}", fc.get_string(sp + 8));
-    let memory_def = &*fc.definition();
-    println!(
-        "{:?}",
-        &slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)
-            [(sp as usize)..(sp + 100) as usize]
-    );
-    let sender = fc.result_sender();
-    sender.send(fc.get_string(sp + 24 + 8).to_string()).unwrap();
 }
 
 unsafe extern "C" fn go_wasmwrite(sp: i32, vmctx: *mut VMContext) {
@@ -713,6 +780,53 @@ unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     fc.set_i64(sp + 16, b.len() as i64);
 }
 
+unsafe extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
+    println!("go_listen_tcp");
+    let fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8);
+    println!("{:?}", addr);
+    let listener = TcpListener::bind(&addr.parse().unwrap()).unwrap();
+    let id = fc.shared_state().net_pool.add(NetTcp::Listener(listener));
+    fc.set_i32(sp + 24, id as i32);
+}
+
+unsafe extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
+    println!("go_accept_tcp");
+    let fc = FuncContext::new(vmctx);
+    let token = fc.get_i32(sp + 8);
+    fc.shared_state()
+        .poll
+        .register(
+            fc.shared_state()
+                .net_pool
+                .get_listener_ref(token as usize)
+                .unwrap(),
+            mio::Token(token as usize),
+            mio::Ready::readable() | mio::Ready::writable(),
+            mio::PollOpt::edge(),
+        )
+        .unwrap();
+}
+
+unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+    println!("go_read_tcp_conn");
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let addr = fc.get_i32(sp + 16);
+    let ln = fc.get_i32(sp + 24);
+    let mut stream = fc
+        .shared_state()
+        .net_pool
+        .get_stream_ref(id as usize)
+        .unwrap();
+    println!("{:?}", stream);
+    stream
+        .read(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
+        .unwrap();
+
+    println!("{:?}", (id, addr, ln));
+}
+
 unsafe extern "C" fn go_lookup_ip(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
@@ -733,27 +847,6 @@ fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
     (host, 0)
         .to_socket_addrs()
         .map(|iter| iter.map(|socket_address| socket_address.ip()).collect())
-}
-
-pub fn start_event_loop() -> mpsc::Sender<String> {
-    let (send, recv) = mpsc::channel();
-
-    thread::spawn(move || loop {
-        match recv.try_recv() {
-            Ok(pay) => {
-                println!("got payload{:?}", pay);
-                // Client::new().get(&pay).send();
-            }
-            Err(err) => match err {
-                std::sync::mpsc::TryRecvError::Empty => {}
-                std::sync::mpsc::TryRecvError::Disconnected => {
-                    return;
-                }
-            },
-        };
-    });
-
-    send
 }
 
 pub fn instantiate_go() -> Result<Instance, InstantiationError> {
@@ -794,14 +887,6 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
             go_get_random_data as *const VMFunctionBody,
         ),
         (
-            "github.com/maxmcd/wasm-servers/gowasm.setenv",
-            go_set_env as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.getenv",
-            go_get_env as *const VMFunctionBody,
-        ),
-        (
             "github.com/maxmcd/wasm-servers/gowasm.loadBytes",
             go_load_bytes as *const VMFunctionBody,
         ),
@@ -810,8 +895,16 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
             go_prepare_bytes as *const VMFunctionBody,
         ),
         (
-            "github.com/maxmcd/wasm-servers/gowasm/http.startRequest",
-            go_start_request as *const VMFunctionBody,
+            "github.com/maxmcd/wasabi/pkg/net.listenTcp",
+            go_listen_tcp as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasabi/pkg/net.acceptTcp",
+            go_accept_tcp as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasabi/pkg/net.readConn",
+            go_read_tcp_conn as *const VMFunctionBody,
         ),
         (
             "syscall/wasm.loadBytes",
@@ -941,7 +1034,6 @@ fn load_args_from_mem(args: Vec<String>, mem: &mut [u8]) -> (i32, i32) {
 fn load_args_from_definition(args: Vec<String>, definition: *mut VMMemoryDefinition) -> (i32, i32) {
     let mut mem = unsafe {
         let memory_def = &*definition;
-        println!("{:?}", memory_def.current_length);
         &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[0..16384]
     };
     load_args_from_mem(args, &mut mem)
@@ -978,7 +1070,6 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("not a thing");
         host_state.definition = Some(definition);
-        host_state.result_sender = Some(start_event_loop());
     }
 
     let (argc, argv) = load_args_from_definition(args, definition);
@@ -987,6 +1078,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
     let mut args = vec![RuntimeValue::I32(argc), RuntimeValue::I32(argv)];
     let invoke_timer = SystemTime::now();
     loop {
+        println!("{:?} {:?}", function_name, args);
         match namespace
             .invoke(&mut *c, index, function_name, &args)
             .map_err(|e| e.to_string())?
@@ -1002,23 +1094,69 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         function_name = "resume";
         args = vec![];
         let instance = &mut namespace.instances[go_index];
-        let host_state = instance
+        let shared_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
-            .expect("not a thing");
+            .expect("host state is not a SharedState");
 
-        if host_state.pending_event.null == false {
+        if shared_state.pending_event.null == false {
             continue;
         }
-        if let Some(callback) = host_state.callback_heap.pop() {
+        // TODO: poll with timeout if there is a callback that needs to run
+        if let Some(callback) = shared_state.callback_heap.pop() {
             let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
             thread::sleep(sleep_time);
             continue;
         }
-        if host_state.exited == false {
-            host_state.pending_event.id = 0;
+        // TODO: don't reallocate
+        if !shared_state.net_pool.is_empty() {
+            let mut events = mio::Events::with_capacity(1024);
+            shared_state.poll.poll(&mut events, None).unwrap();
+            let mut args = Vec::new();
+            for event in events.iter() {
+                args.push(JsValue::Int(event.token().0 as i32));
+                let to_add = if let Some(ntcp) = shared_state.net_pool.get_ref(event.token().0) {
+                    match ntcp {
+                        NetTcp::Listener(listener) => {
+                            let (mut stream, _) = listener.accept().unwrap();
+                            Some(NetTcp::Stream(stream))
+                        }
+                        NetTcp::Stream(_) => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(ntcp) = to_add {
+                    match ntcp {
+                        NetTcp::Listener(_) => {}
+                        NetTcp::Stream(stream) => {
+                            let id = shared_state.net_pool.next_id();
+                            shared_state
+                                .poll
+                                .register(
+                                    &stream,
+                                    mio::Token(id),
+                                    mio::Ready::readable() | mio::Ready::writable(),
+                                    mio::PollOpt::edge(),
+                                )
+                                .unwrap();
+                            shared_state.net_pool.add(NetTcp::Stream(stream));
+                            args.push(JsValue::Int(id as i32));
+                        }
+                    }
+                }
+            }
+            shared_state.pending_event.args = Some(args);
+            shared_state.pending_event.id = shared_state.net_callback_id;
+            shared_state.pending_event.null = false;
             continue;
         }
+
+        if shared_state.exited == false {
+            shared_state.pending_event.id = 0;
+            continue;
+        }
+
         break;
     }
     println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());

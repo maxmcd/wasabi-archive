@@ -2,22 +2,27 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"net/http"
-	"time"
+
+	wnet "github.com/maxmcd/wasabi/pkg/net"
 )
 
 func main() {
-
-	_, err := http.Get("http://www.google.com")
-	if err != nil {
-		panic(err)
+	// fmt.Println("hi")
+	l := wnet.ListenTcp("127.0.0.1:8000")
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			panic(err)
+		}
+		b := make([]byte, 10)
+		if ln, err := c.Read(b); err != nil {
+			panic(err)
+		} else {
+			fmt.Println(ln, b)
+		}
 	}
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Request recieved")
-		fmt.Fprintf(w, "Hello %s", time.Now())
-	})
-	log.Println("Listening at :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// wnet.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 	fmt.Printf("%s %s\n", r.Method, r.URL.String())
+	// 	w.Write([]byte("Hello"))
+	// }))
 }
