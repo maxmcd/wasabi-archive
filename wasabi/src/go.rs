@@ -1,3 +1,4 @@
+use bytes::{as_i32_le, as_i64_le, i32_as_u8_le, i64_as_u8_le, u32_as_u8_le};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
@@ -596,55 +597,6 @@ trait ContextHelpers {
         let reference = self.get_i32(address);
         return (Some(&self.values()[reference as usize]), None);
     }
-}
-
-fn as_i32_le(array: &[u8]) -> i32 {
-    ((array[0] as i32) << 0)
-        | ((array[1] as i32) << 8)
-        | ((array[2] as i32) << 16)
-        | ((array[3] as i32) << 24)
-}
-
-fn as_i64_le(array: &[u8]) -> i64 {
-    ((array[0] as i64) << 0)
-        | ((array[1] as i64) << 8)
-        | ((array[2] as i64) << 16)
-        | ((array[3] as i64) << 24)
-        | ((array[4] as i64) << 32)
-        | ((array[5] as i64) << 40)
-        | ((array[6] as i64) << 48)
-        | ((array[7] as i64) << 56)
-}
-
-fn i64_as_u8_le(x: i64) -> [u8; 8] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-        ((x >> 32) & 0xff) as u8,
-        ((x >> 40) & 0xff) as u8,
-        ((x >> 48) & 0xff) as u8,
-        ((x >> 56) & 0xff) as u8,
-    ]
-}
-
-fn i32_as_u8_le(x: i32) -> [u8; 4] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-    ]
-}
-
-fn u32_as_u8_le(x: u32) -> [u8; 4] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-    ]
 }
 
 fn epoch_ns() -> i64 {

@@ -4,6 +4,8 @@ pub struct Pool<T> {
     items: Vec<Option<T>>,
 }
 
+// This yields poor performance with large numbers and frequent sparse item
+// removal. Should swap out for something else at some point.
 impl<T> Pool<T> {
     pub fn new() -> Self {
         Self {
