@@ -3,6 +3,7 @@ use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
+use js;
 use mio;
 use mio::net::TcpListener;
 use rand::{thread_rng, Rng};
@@ -25,32 +26,35 @@ use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDef
 
 #[derive(Debug)]
 enum JsValue {
-    // Likely can avoid Vec and String entirely
-    // just reference the memory
     Array(Vec<JsValue>),
     Bytes(Vec<u8>),
     False,
-    FuncWrapper { id: i32 },
+    FuncWrapper {
+        id: i32,
+    },
     Global,
     Int(i32),
     Int64(i64),
     Mem,
-    Memory { address: i32, len: i32 },
+    Memory {
+        address: i32,
+        len: i32,
+    },
     NaN,
     NetListener,
     Null,
-    PendingEvent,
+    Object {
+        name: &'static str,
+        values: HashMap<&'static str, i32>,
+    },
+    PendingEvent {
+        id: i32,
+        args: Option<Vec<JsValue>>,
+    },
     String(String),
     This,
     True,
     Undefined,
-}
-
-#[derive(Debug)]
-struct PendingEvent {
-    id: i32,
-    null: bool,
-    args: Option<Vec<JsValue>>,
 }
 
 #[derive(Debug, Eq)]
@@ -165,7 +169,7 @@ enum NetTcp {
 struct SharedState {
     definition: Option<*mut VMMemoryDefinition>,
     values: Vec<JsValue>,
-    pending_event: PendingEvent,
+    pending_event_ref: i32,
     exited: bool,
     poll: mio::Poll,
     net_pool: NetPool,
@@ -177,7 +181,7 @@ struct SharedState {
 
 impl SharedState {
     fn new() -> Self {
-        Self {
+        let mut ss = Self {
             callback_heap: BinaryHeap::new(),
             callback_map: HashMap::new(),
             definition: None,
@@ -186,22 +190,41 @@ impl SharedState {
             net_pool: NetPool::new(),
             net_callback_id: 0,
             next_callback_timeout_id: 1,
-            pending_event: PendingEvent {
-                null: true,
-                id: 0,
-                args: Some(Vec::new()),
-            },
+            pending_event_ref: 0,
             values: vec![
-                JsValue::NaN,    // NaN,
-                JsValue::Int(0), // 0,
-                JsValue::Null,   // null,
-                JsValue::True,   // true,
-                JsValue::False,  // false,
-                JsValue::Global, // global,
-                JsValue::Mem,    // this._inst.exports.mem,
-                JsValue::This,   // this,
+                JsValue::NaN,    //0 NaN,
+                JsValue::Int(0), //1 0,
+                JsValue::Null,   //2 null,
+                JsValue::True,   //3 true,
+                JsValue::False,  //4 false,
+                JsValue::Object {
+                    name: "global",
+                    values: [("fs", 8), ("Date", 9), ("Crypto", 10)]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                }, //5 global,
+                JsValue::Mem,    //6 this._inst.exports.mem,
+                JsValue::This,   //7 this,
             ],
-        }
+        };
+        let fs = JsValue::Object {
+            name: "fs",
+            values: [("write", -1)].iter().cloned().collect(),
+        };
+        ss.add_value(fs);
+        ss
+    }
+    fn add_value(&mut self, value: JsValue) -> i32 {
+        let reference = self.values.len();
+        self.values.push(value);
+        reference as i32
+    }
+    fn add_pending_event(&mut self, id: i32, args: Option<Vec<JsValue>>) {
+        let pending_event = JsValue::PendingEvent { id: id, args: args };
+        let reference = self.values.len();
+        self.values.push(pending_event);
+        self.pending_event_ref = reference as i32;
     }
 }
 
@@ -271,16 +294,15 @@ trait ContextHelpers {
                     panic!("Not implemented {:?} {:?}", target, property_key);
                 }
             },
-            (JsValue::PendingEvent, JsValue::String(a)) => match a.as_ref() {
-                "id" => JsValue::Int(self.shared_state().pending_event.id),
+            (JsValue::PendingEvent { id, args }, JsValue::String(a)) => match a.as_ref() {
+                "id" => JsValue::Int(*id),
                 "this" => JsValue::This,
                 "args" => {
-                    if let Some(args) = self.shared_state().pending_event.args.take() {
-                        self.shared_state().pending_event.null = true;
-                        JsValue::Array(args)
-                    } else {
-                        JsValue::Array(vec![])
-                    }
+                    // if let Some(args) = args.take() {
+                    //     JsValue::Array(args)
+                    // } else {
+                    JsValue::Array(vec![])
+                    // }
                 }
                 _ => {
                     panic!("Not implemented {:?} {:?}", target, property_key);
@@ -292,24 +314,34 @@ trait ContextHelpers {
             }
             (JsValue::NetListener, _) => JsValue::NetListener,
             (JsValue::This, JsValue::String(s)) => {
-                if s == "_pendingEvent" && self.shared_state().pending_event.null {
+                if s == "_pendingEvent" && self.shared_state().pending_event_ref == 0 {
                     JsValue::Null
                 } else if s == "_pendingEvent" {
-                    JsValue::PendingEvent
+                    let pe = self
+                        .shared_state()
+                        .values
+                        .get(self.shared_state().pending_event_ref as usize);
+                    if let Some(pe) = pe {
+                        match pe {
+                            // JsValue::Null
+                            // JsValue::PendingEvent { id, args } => JsValue::PendingEvent {
+                            //     id: *id,
+                            //     args: args.take(),
+                            // },
+                            _ => JsValue::Null,
+                        }
+                    } else {
+                        JsValue::Null
+                    }
                 } else {
                     JsValue::String(format!("this.{}", s).to_string())
                 }
             }
-            (JsValue::Array(v), JsValue::Int64(i)) => {
-                if *i == 1 {
-                    self.shared_state().pending_event.null = true;
-                }
-                match v[*i as usize] {
-                    JsValue::Int(i) => JsValue::Int(i),
-                    JsValue::Null => JsValue::Null,
-                    _ => panic!("Not implemented {:?} {:?}", target, property_key),
-                }
-            }
+            (JsValue::Array(v), JsValue::Int64(i)) => match v[*i as usize] {
+                JsValue::Int(i) => JsValue::Int(i),
+                JsValue::Null => JsValue::Null,
+                _ => panic!("Not implemented {:?} {:?}", target, property_key),
+            },
             _ => {
                 panic!("Not implemented {:?} {:?}", target, property_key);
             }
@@ -320,9 +352,9 @@ trait ContextHelpers {
             (JsValue::This, "_pendingEvent", JsValue::Null) => {
                 // sets pending event to null but expects the object
                 // to still exist so we ignore this for now
-                println!("set pending event to null");
+                self.shared_state().pending_event_ref = 0;
             }
-            (JsValue::PendingEvent, "result", JsValue::Null) => {}
+            (JsValue::PendingEvent { .. }, "result", JsValue::Null) => {}
             _ => panic!(
                 "Not implemented {:?} {:?} {:?}",
                 target, property_key, value
@@ -368,15 +400,15 @@ trait ContextHelpers {
                     // String("fs write")
                     // String("fs")
                     // [
-                    //   fd:      (None, Some(1)),
-                    //   buffer:  (Some(Memory {
-                    //               address: 201441296,
-                    //               len: 16,
-                    //            }), None),
-                    //   offset:  (Some(Int(0)), None),
-                    //   len:     (None, Some(16)),
-                    //            (Some(Null), None),
-                    //            (Some(FuncWrapper { id: 1 }), None),
+                    //   fd:       (None, Some(1)),
+                    //   buffer:   (Some(Memory {
+                    //                address: 201441296,
+                    //                len: 16,
+                    //             }), None),
+                    //   offset:   (Some(Int(0)), None),
+                    //   len:      (None, Some(16)),
+                    //             (Some(Null), None),
+                    //   callback: (Some(FuncWrapper { id: 1 }), None),
                     // ]
                     if let JsValue::Memory { address, len } = argument_list[1].0.unwrap() {
                         print!(
@@ -384,11 +416,15 @@ trait ContextHelpers {
                             str::from_utf8(self._get_bytes(*address as usize, *len as usize))
                                 .unwrap()
                         );
-                        self.shared_state().pending_event.args =
-                            Some(vec![JsValue::Null, JsValue::Int(*len)]);
-                        self.shared_state().pending_event.null = false;
+
                         if let JsValue::FuncWrapper { id } = argument_list[5].0.unwrap() {
-                            self.shared_state().pending_event.id = *id
+                            let pending_event = JsValue::PendingEvent {
+                                id: *id,
+                                args: Some(vec![JsValue::Null, JsValue::Int(*len)]),
+                            };
+                            let reference = self.values().len() as i32;
+                            self.values().push(pending_event);
+                            self.shared_state().pending_event_ref = reference;
                         }
                         // arguments to callback might need to be pinned to global state
                         Some(JsValue::Int(*len))
@@ -1099,7 +1135,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("host state is not a SharedState");
 
-        if shared_state.pending_event.null == false {
+        if shared_state.pending_event_ref != 0 {
             continue;
         }
         // TODO: poll with timeout if there is a callback that needs to run
@@ -1146,14 +1182,13 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
                     }
                 }
             }
-            shared_state.pending_event.args = Some(args);
-            shared_state.pending_event.id = shared_state.net_callback_id;
-            shared_state.pending_event.null = false;
+            let id = shared_state.net_callback_id;
+            shared_state.add_pending_event(id, Some(args));
             continue;
         }
 
         if shared_state.exited == false {
-            shared_state.pending_event.id = 0;
+            shared_state.add_pending_event(0, None);
             continue;
         }
 

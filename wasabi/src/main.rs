@@ -38,6 +38,8 @@ extern crate wasmtime_jit;
 extern crate wasmtime_runtime;
 
 mod go;
+mod js;
+mod pool;
 
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
