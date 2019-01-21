@@ -1,6 +1,7 @@
 //! Runtime is a wasm go runtime
 
-#![deny(missing_docs, trivial_numeric_casts, unstable_features)]
+// #![deny(missing_docs, trivial_numeric_casts, unstable_features)]
+#![deny(trivial_numeric_casts, unstable_features)]
 #![warn(unused_import_braces)]
 #![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
 #![cfg_attr(

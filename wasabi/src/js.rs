@@ -1,50 +1,58 @@
 use bytes;
 use pool::Pool;
-use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::i32;
 
 #[derive(Debug)]
-enum Value {
-    Array(Vec<(usize, bool)>),
+pub enum Value {
+    Array(Vec<(i64, bool)>),
     False,
     Int(i32),
     Int64(i64),
-    Mem,
     Memory {
-        address: i32,
-        len: i32,
+        address: i64,
+        len: i64,
     },
     NaN,
     Null,
     Object {
         name: &'static str,
-        values: HashMap<&'static str, (usize, bool)>,
+        // the i64 is a ref or integer
+        // the bool is "is this a ref"
+        // See load_value and store_value
+        values: HashMap<&'static str, (i64, bool)>,
     },
     String(String),
+    Bytes(Vec<u8>),
     True,
     Undefined,
 }
 
-struct Js {
+#[derive(Debug)]
+pub struct Js {
     pool: Pool<Value>,
+    pub static_strings: HashMap<&'static str, &'static str>,
 }
 
-pub fn load_value(b: &[u8]) -> (usize, bool) {
+pub fn load_value(b: &[u8]) -> (i64, bool) {
     let float = f64::from_bits(bytes::as_i64_le(b) as u64);
-    let intfloat = float as usize;
+    let intfloat = float as i64;
     if float == (intfloat) as f64 {
         //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
         (intfloat, false)
     } else {
-        (bytes::as_i32_le(b) as usize, true)
+        (bytes::as_i32_le(b) as i64, true)
     }
 }
-pub fn store_value(r: (usize, bool)) -> [u8; 8] {
+pub fn store_value(r: (i64, bool)) -> [u8; 8] {
     let nan_head = 0x7FF80000;
     let mut out = [0; 8];
     if r.1 {
         out[0..4].copy_from_slice(&bytes::i32_as_u8_le(r.0 as i32));
+        out[4..8].copy_from_slice(&bytes::i32_as_u8_le(nan_head));
+        out
+    } else if r.0 == 0 {
+        out[0..4].copy_from_slice(&bytes::i32_as_u8_le(1));
         out[4..8].copy_from_slice(&bytes::i32_as_u8_le(nan_head));
         out
     } else {
@@ -53,18 +61,31 @@ pub fn store_value(r: (usize, bool)) -> [u8; 8] {
 }
 
 impl Js {
-    fn pool_add(&mut self, v: Value) -> usize {
-        self.pool.add(v)
+    pub fn pool_add(&mut self, v: Value) -> i64 {
+        self.pool.add(v) as i64
     }
-    fn pool_get(&self, r: usize) -> Option<&Value> {
-        self.pool.get(r)
+    pub fn pool_get(&self, r: i64) -> Option<&Value> {
+        self.pool.get(r as usize)
     }
-    fn add_object_to_ref(&mut self, r: usize, name: &'static str) -> usize {
+    pub fn pool_get_mut(&mut self, r: i64) -> Option<&mut Value> {
+        self.pool.get_mut(r as usize)
+    }
+    pub fn get_object_name(&self, r: i64) -> Option<&'static str> {
+        match self.pool_get(r) {
+            Some(o) => match o {
+                Value::Object { name, .. } => Some(name),
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    pub fn add_object(&mut self, r: i64, name: &'static str) -> i64 {
+        self.static_strings.insert(name, name);
         let new_r = self.pool.add(Value::Object {
             name: name,
             values: HashMap::new(),
-        });
-        if let Some(o) = self.pool.get_mut(r) {
+        }) as i64;
+        if let Some(o) = self.pool.get_mut(r as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, (new_r, true));
@@ -78,8 +99,60 @@ impl Js {
             panic!("ref doesn't exist");
         }
     }
-    fn reflect_get(&self, target: usize, property_key: &'static str) -> Option<(usize, bool)> {
-        if let Some(o) = self.pool.get(target) {
+    pub fn add_array(&mut self, r: i64, name: &'static str, args: Vec<(i64, bool)>) -> i64 {
+        self.static_strings.insert(name, name);
+        let new_r = self.pool.add(Value::Array(args)) as i64;
+        if let Some(o) = self.pool.get_mut(r as usize) {
+            match o {
+                Value::Object { values, .. } => {
+                    values.insert(name, (new_r, true));
+                    new_r
+                }
+                _ => {
+                    panic!("ref value is not an object");
+                }
+            }
+        } else {
+            panic!("ref doesn't exist");
+        }
+    }
+    pub fn add_object_value(&mut self, r: i64, name: &'static str, value: (i64, bool)) {
+        self.static_strings.insert(name, name);
+        if let Some(o) = self.pool.get_mut(r as usize) {
+            match o {
+                Value::Object { values, .. } => {
+                    values.insert(name, value);
+                }
+                _ => {
+                    panic!("ref value is not an object");
+                }
+            }
+        } else {
+            panic!("ref doesn't exist");
+        }
+    }
+    pub fn value_length(&self, target: i64) -> Option<(i64)> {
+        if let Some(v) = self.pool_get(target) {
+            match v {
+                Value::Array(rs) => Some(rs.len() as i64),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+    pub fn reflect_get_index(&self, target: i64, property_key: i64) -> Option<(i64, bool)> {
+        if let Some(o) = self.pool_get(target) {
+            match o {
+                Value::Array(items) => Some(items[property_key as usize]),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+    pub fn reflect_get(&self, target: i64, property_key: &'static str) -> Option<(i64, bool)> {
+        if let Some(o) = self.pool_get(target) {
             match o {
                 Value::Object { values, .. } => {
                     if let Some(s) = values.get(property_key) {
@@ -88,14 +161,53 @@ impl Js {
                         None
                     }
                 }
+                // Value::Mem => {}
                 _ => None,
             }
         } else {
             None
         }
     }
-    fn reflect_set(&mut self, target: usize, property_key: &'static str, value: usize) {
-        if let Some(o) = self.pool.get_mut(target) {
+    pub fn reflect_construct(
+        &mut self,
+        target: i64,
+        argument_list: Vec<(i64, bool)>,
+    ) -> Option<(i64, bool)> {
+        // TODO: don't pass around arbitrary ints as references within a function
+        let name = match self.pool_get(target) {
+            Some(o) => match o {
+                Value::Object { name, .. } => match name {
+                    &"Uint8Array" => Some(0),
+                    &"Date" => Some(1),
+                    &"net_listener" => Some(2),
+                    _ => None,
+                },
+                _ => None,
+            },
+            None => None,
+        };
+        match name {
+            Some(key) => match key {
+                0 => Some((
+                    self.pool_add(Value::Memory {
+                        address: argument_list[1].0,
+                        len: argument_list[2].0,
+                    }),
+                    true,
+                )), //Uint8Array
+                1 => Some((target, true)), //Date
+                2 => None,                 //net_listener
+                _ => None,
+            },
+            None => None,
+        }
+    }
+    pub fn set_pending_event(&mut self, target: i64) {
+        let this_id = 7;
+    }
+
+    pub fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
+        if let Some(o) = self.pool.get_mut(target as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(property_key, (value, true));
@@ -104,8 +216,11 @@ impl Js {
             }
         }
     }
-    fn new() -> Self {
-        let mut js = Self { pool: Pool::new() };
+    pub fn new() -> Self {
+        let mut js = Self {
+            pool: Pool::new(),
+            static_strings: HashMap::new(),
+        };
         // These initial indexes must map up with Go's underlying assumptions
         // https://github.com/golang/go/blob/8e50e48f4/src/syscall/js/js.go#L75-L83
         js.pool_add(Value::NaN); //0 NaN
@@ -117,26 +232,56 @@ impl Js {
             name: "global",
             values: HashMap::new(),
         }); //5 global
-        js.pool_add(Value::Mem); //6 this._inst.exports.mem
+        let mem = js.pool_add(Value::Object {
+            name: "mem",
+            values: HashMap::new(),
+        }); //6 this._inst.exports.mem
         let this = js.pool_add(Value::Object {
             name: "this",
             values: HashMap::new(),
         }); //7 this
 
-        let fs = js.add_object_to_ref(global, "fs");
-        js.add_object_to_ref(fs, "write");
-        js.add_object_to_ref(fs, "open");
-        js.add_object_to_ref(fs, "read");
-        js.add_object_to_ref(fs, "fsync");
+        js.add_object(mem, "buffer");
 
-        let crypto = js.add_object_to_ref(global, "crypto");
-        js.add_object_to_ref(crypto, "getRandomValues");
+        let fs = js.add_object(global, "fs");
+        js.add_object(fs, "write");
+        js.add_object(fs, "open");
+        js.add_object(fs, "read");
+        js.add_object(fs, "fsync");
+        let constants = js.add_object(fs, "constants");
 
-        js.add_object_to_ref(this, "_pendingEvent");
+        js.add_object_value(constants, "O_WRONLY", (-1, false));
+        js.add_object_value(constants, "O_RDWR", (-1, false));
+        js.add_object_value(constants, "O_CREAT", (-1, false));
+        js.add_object_value(constants, "O_TRUNC", (-1, false));
+        js.add_object_value(constants, "O_APPEND", (-1, false));
+        js.add_object_value(constants, "O_EXCL", (-1, false));
 
-        js.add_object_to_ref(global, "Uint8Array");
-        js.add_object_to_ref(global, "Date");
-        js.add_object_to_ref(global, "net_listener");
+        let crypto = js.add_object(global, "crypto");
+        js.add_object(crypto, "getRandomValues");
+
+        let pe = js.add_object(this, "_pendingEvent");
+        js.add_object_value(pe, "result", (2, true));
+        js.add_object(this, "_makeFuncWrapper");
+
+        js.add_object(global, "Object");
+        js.add_object(global, "Array");
+
+        js.add_object(global, "Uint8Array");
+        js.add_object(global, "Int16Array");
+        js.add_object(global, "Int32Array");
+        js.add_object(global, "Int8Array");
+        js.add_object(global, "Uint16Array");
+        js.add_object(global, "Uint32Array");
+        js.add_object(global, "Float32Array");
+        js.add_object(global, "Float64Array");
+        js.add_object(global, "process");
+        js.add_object(global, "net_listener");
+
+        let date = js.add_object(global, "Date");
+        // this would be a function on a new Date() but we'll just make it a
+        // function on the global object to avoid allocating a item
+        js.add_object(date, "getTimezoneOffset");
 
         js
     }
@@ -145,6 +290,7 @@ impl Js {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // use rand::{thread_rng, Rng};
 
     #[test]
     fn store_and_load_fuzz() {
@@ -152,14 +298,11 @@ mod tests {
         assert_eq!((42, true), load_value(&store_value((42, true))));
 
         // greater than i32 is ok for numbers
-        let big = (i32::MAX as usize) + 10; // 2147483657
+        let big = (i32::MAX as i64) + 10; // 2147483657
         assert_eq!((big, false), load_value(&store_value((big, false))));
 
         // not for refs
-        assert_eq!(
-            (18446744071562067977, true),
-            load_value(&store_value((big, true)))
-        );
+        assert_eq!((-2147483639, true), load_value(&store_value((big, true))));
 
         // // fuzzz
         // loop {
@@ -190,7 +333,7 @@ mod tests {
     #[test]
     fn test_reflect_get() {
         let j = Js::new();
-        assert_eq!(8, j.reflect_get(5, "fs").unwrap().0);
+        assert_eq!(9, j.reflect_get(5, "fs").unwrap().0);
     }
     #[test]
     fn test_reflect_set() {

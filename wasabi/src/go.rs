@@ -9,8 +9,7 @@ use mio;
 use mio::net::TcpListener;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
@@ -24,39 +23,6 @@ use wasmtime_jit::{
     instantiate, ActionOutcome, Compiler, InstantiationError, Namespace, RuntimeValue,
 };
 use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
-
-#[derive(Debug)]
-enum JsValue {
-    Array(Vec<JsValue>),
-    Bytes(Vec<u8>),
-    False,
-    FuncWrapper {
-        id: i32,
-    },
-    Global,
-    Int(i32),
-    Int64(i64),
-    Mem,
-    Memory {
-        address: i32,
-        len: i32,
-    },
-    NaN,
-    NetListener,
-    Null,
-    Object {
-        name: &'static str,
-        values: HashMap<&'static str, i32>,
-    },
-    PendingEvent {
-        id: i32,
-        args: Option<Vec<JsValue>>,
-    },
-    String(String),
-    This,
-    True,
-    Undefined,
-}
 
 #[derive(Debug, Eq)]
 struct Callback {
@@ -169,7 +135,6 @@ enum NetTcp {
 #[derive(Debug)]
 struct SharedState {
     definition: Option<*mut VMMemoryDefinition>,
-    values: Vec<JsValue>,
     pending_event_ref: i32,
     exited: bool,
     poll: mio::Poll,
@@ -178,11 +143,13 @@ struct SharedState {
     next_callback_timeout_id: i32,
     callback_heap: BinaryHeap<Callback>,
     callback_map: HashMap<i32, bool>,
+    call_queue: VecDeque<i64>,
+    js: js::Js,
 }
 
 impl SharedState {
     fn new() -> Self {
-        let mut ss = Self {
+        Self {
             callback_heap: BinaryHeap::new(),
             callback_map: HashMap::new(),
             definition: None,
@@ -192,41 +159,21 @@ impl SharedState {
             net_callback_id: 0,
             next_callback_timeout_id: 1,
             pending_event_ref: 0,
-            values: vec![
-                JsValue::NaN,    //0 NaN,
-                JsValue::Int(0), //1 0,
-                JsValue::Null,   //2 null,
-                JsValue::True,   //3 true,
-                JsValue::False,  //4 false,
-                JsValue::Object {
-                    name: "global",
-                    values: [("fs", 8), ("Date", 9), ("Crypto", 10)]
-                        .iter()
-                        .cloned()
-                        .collect(),
-                }, //5 global,
-                JsValue::Mem,    //6 this._inst.exports.mem,
-                JsValue::This,   //7 this,
-            ],
-        };
-        let fs = JsValue::Object {
-            name: "fs",
-            values: [("write", -1)].iter().cloned().collect(),
-        };
-        ss.add_value(fs);
-        ss
+            js: js::Js::new(),
+            call_queue: VecDeque::new(),
+        }
     }
-    fn add_value(&mut self, value: JsValue) -> i32 {
-        let reference = self.values.len();
-        self.values.push(value);
-        reference as i32
-    }
-    fn add_pending_event(&mut self, id: i32, args: Option<Vec<JsValue>>) {
-        let pending_event = JsValue::PendingEvent { id: id, args: args };
-        let reference = self.values.len();
-        self.values.push(pending_event);
-        self.pending_event_ref = reference as i32;
-    }
+    // fn add_value(&mut self, value: JsValue) -> i32 {
+    //     let reference = self.values.len();
+    //     self.values.push(value);
+    //     reference as i32
+    // }
+    // fn add_pending_event(&mut self, id: i32, args: Option<Vec<JsValue>>) {
+    //     let pending_event = JsValue::PendingEvent { id: id, args: args };
+    //     let reference = self.values.len();
+    //     self.values.push(pending_event);
+    //     self.pending_event_ref = reference as i32;
+    // }
 }
 
 struct FuncContext {
@@ -268,212 +215,104 @@ trait ContextHelpers {
     }
     fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8];
     fn mem_slice(&self, start: usize, end: usize) -> &[u8];
-    fn values(&self) -> &mut Vec<JsValue> {
-        &mut self.shared_state().values
+    fn js(&self) -> &mut js::Js {
+        &mut self.shared_state().js
     }
-    fn reflect_get(&self, target: &JsValue, property_key: &JsValue) -> JsValue {
-        match (target, property_key) {
-            (JsValue::Global, JsValue::String(s)) => JsValue::String(s.to_string()),
-            (JsValue::String(t), JsValue::String(pk)) => match (t.as_ref(), pk.as_ref()) {
-                ("fs", "constants") => JsValue::String("fs.constants".to_string()),
-                ("fs", "write") => JsValue::String("fs.write".to_string()),
-                ("Date", "getTimezoneOffset") => {
-                    JsValue::String("Date.getTimezoneOffset".to_string())
-                }
-                ("crypto", "getRandomValues") => {
-                    JsValue::String("crypto.getRandomValues".to_string())
-                } // Always UTC
-                ("fs.constants", _) => {
-                    JsValue::Int(-1)
-                    // wasm_exec.js:42
-                    // constants: {
-                    //     O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1,
-                    //     O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1 },
-                    // unused
-                }
-                _ => {
-                    panic!("Not implemented {:?} {:?}", target, property_key);
-                }
-            },
-            (JsValue::PendingEvent { id, args }, JsValue::String(a)) => match a.as_ref() {
-                "id" => JsValue::Int(*id),
-                "this" => JsValue::This,
-                "args" => {
-                    // if let Some(args) = args.take() {
-                    //     JsValue::Array(args)
-                    // } else {
-                    JsValue::Array(vec![])
-                    // }
-                }
-                _ => {
-                    panic!("Not implemented {:?} {:?}", target, property_key);
-                }
-            },
-            (JsValue::Mem, JsValue::String(_pk)) => {
-                // mem.buffer
-                JsValue::String("mem.buffer".to_string())
-            }
-            (JsValue::NetListener, _) => JsValue::NetListener,
-            (JsValue::This, JsValue::String(s)) => {
-                if s == "_pendingEvent" && self.shared_state().pending_event_ref == 0 {
-                    JsValue::Null
-                } else if s == "_pendingEvent" {
-                    let pe = self
-                        .shared_state()
-                        .values
-                        .get(self.shared_state().pending_event_ref as usize);
-                    if let Some(pe) = pe {
-                        match pe {
-                            // JsValue::Null
-                            // JsValue::PendingEvent { id, args } => JsValue::PendingEvent {
-                            //     id: *id,
-                            //     args: args.take(),
-                            // },
-                            _ => JsValue::Null,
-                        }
-                    } else {
-                        JsValue::Null
-                    }
-                } else {
-                    JsValue::String(format!("this.{}", s).to_string())
-                }
-            }
-            (JsValue::Array(v), JsValue::Int64(i)) => match v[*i as usize] {
-                JsValue::Int(i) => JsValue::Int(i),
-                JsValue::Null => JsValue::Null,
-                _ => panic!("Not implemented {:?} {:?}", target, property_key),
-            },
-            _ => {
-                panic!("Not implemented {:?} {:?}", target, property_key);
-            }
-        }
+    fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
+        self.shared_state()
+            .js
+            .reflect_set(target, property_key, value)
     }
-    fn reflect_set(&self, target: &JsValue, property_key: &str, value: &JsValue) {
-        match (target, property_key, value) {
-            (JsValue::This, "_pendingEvent", JsValue::Null) => {
-                // sets pending event to null but expects the object
-                // to still exist so we ignore this for now
-                self.shared_state().pending_event_ref = 0;
-            }
-            (JsValue::PendingEvent { .. }, "result", JsValue::Null) => {}
-            _ => panic!(
-                "Not implemented {:?} {:?} {:?}",
-                target, property_key, value
-            ),
-        }
+    fn reflect_get(&self, target: i64, property_key: &'static str) -> Option<(i64, bool)> {
+        self.shared_state().js.reflect_get(target, property_key)
+    }
+    fn reflect_get_index(&self, target: i64, property_key: i64) -> Option<(i64, bool)> {
+        self.shared_state()
+            .js
+            .reflect_get_index(target, property_key)
+    }
+    fn value_length(&self, target: i64) -> Option<i64> {
+        self.shared_state().js.value_length(target)
     }
     fn reflect_apply(
         &self,
-        target: &JsValue,
-        property_key: &JsValue,
-        argument_list: Vec<(Option<&JsValue>, Option<i32>)>,
-    ) -> JsValue {
-        if let Some(r) = match target {
-            JsValue::NetListener => {
-                if let JsValue::FuncWrapper { id } = argument_list[0].0.unwrap() {
-                    self.shared_state().net_callback_id = *id;
-                }
-                Some(JsValue::Undefined)
-            }
-            JsValue::String(t) => match t.as_ref() {
-                "this._makeFuncWrapper" => {
-                    // this could be a boxed FnMut value for more flexbility
-                    // for now we just handle it as a one-off enum type
-                    let id = argument_list[0].1.unwrap();
-                    Some(JsValue::FuncWrapper { id: id })
-                }
-                "crypto.getRandomValues" => {
-                    // String("crypto")[(
-                    //     Some(Memory {
-                    //         address: 201441472,
-                    //         len: 10,
-                    //     }),
-                    //     None,
-                    // )]
-                    if let JsValue::Memory { address, len } = argument_list[0].0.unwrap() {
-                        thread_rng()
-                            .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
-                    }
-                    Some(JsValue::Undefined)
-                }
-                "Date.getTimezoneOffset" => Some(JsValue::Int(0)), // Always UTC
-                "fs.write" => {
-                    // String("fs write")
-                    // String("fs")
-                    // [
-                    //   fd:       (None, Some(1)),
-                    //   buffer:   (Some(Memory {
-                    //                address: 201441296,
-                    //                len: 16,
-                    //             }), None),
-                    //   offset:   (Some(Int(0)), None),
-                    //   len:      (None, Some(16)),
-                    //             (Some(Null), None),
-                    //   callback: (Some(FuncWrapper { id: 1 }), None),
-                    // ]
-                    if let JsValue::Memory { address, len } = argument_list[1].0.unwrap() {
-                        print!(
-                            "{}",
-                            str::from_utf8(self._get_bytes(*address as usize, *len as usize))
-                                .unwrap()
-                        );
+        target: i64,
+        this_argument: i64,
+        argument_list: Vec<(i64, bool)>,
+    ) -> Option<(i64, bool)> {
+        let target_name = self.shared_state().js.get_object_name(target).unwrap();
+        let this_argument_name = self
+            .shared_state()
+            .js
+            .get_object_name(this_argument)
+            .unwrap();
 
-                        if let JsValue::FuncWrapper { id } = argument_list[5].0.unwrap() {
-                            let pending_event = JsValue::PendingEvent {
-                                id: *id,
-                                args: Some(vec![JsValue::Null, JsValue::Int(*len)]),
-                            };
-                            let reference = self.values().len() as i32;
-                            self.values().push(pending_event);
-                            self.shared_state().pending_event_ref = reference;
-                        }
-                        // arguments to callback might need to be pinned to global state
-                        Some(JsValue::Int(*len))
-                    } else {
-                        panic!("Incorrect JsValue variant for js.write buffer should be JsValue::Memory")
-                    }
+        match (target_name, this_argument_name) {
+            ("getTimezoneOffset", "Date") => Some((0, false)),
+            ("_makeFuncWrapper", "this") => {
+                let wf = self.shared_state().js.pool_add(js::Value::Object {
+                    name: "wrappedFunc",
+                    values: HashMap::new(),
+                });
+                // maybe don't create an object here?
+                self.shared_state().js.add_object(wf, "this");
+                self.shared_state()
+                    .js
+                    .add_object_value(wf, "id", argument_list[0]);
+                Some((wf, true))
+            }
+            ("getRandomValues", "crypto") => {
+                if let js::Value::Memory { address, len } =
+                    self.shared_state().js.pool_get(argument_list[0].0).unwrap()
+                {
+                    thread_rng()
+                        .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
+                };
+                Some((0, true))
+            }
+            ("write", "fs") => {
+                // [
+                //     fd:       (1, false),
+                //     buffer:   (33, true),
+                //     offset:   (1, true),
+                //     len:      (85, false),
+                //               (2, true),
+                //     callback: (34, true),
+                // ];
+                if let js::Value::Memory { address, len } =
+                    self.shared_state().js.pool_get(argument_list[1].0).unwrap()
+                {
+                    print!(
+                        "{}",
+                        str::from_utf8(self._get_bytes(*address as usize, *len as usize)).unwrap()
+                    );
                 }
-                _ => None,
-            },
-            _ => None,
-        } {
-            return r;
-        } else {
-            panic!(
-                "Not implemented {:?} {:?} {:?}",
-                target, property_key, argument_list
-            );
+                self.shared_state().js.add_array(
+                    argument_list[5].0,
+                    "args",
+                    vec![(2, true), argument_list[3]],
+                );
+                self.shared_state().call_queue.push_back(argument_list[5].0);
+                Some(argument_list[3])
+            }
+            _ => {
+                panic!(
+                    "No reflect_apply match on {:?} {:?}",
+                    target_name, this_argument_name
+                );
+            }
         }
     }
     fn reflect_construct(
         &self,
-        target: &JsValue,
-        argument_list: Vec<(Option<&JsValue>, Option<i32>)>,
-    ) -> JsValue {
-        if let Some(r) = match target {
-            JsValue::String(t) => match t.as_ref() {
-                // Expected format:
-                // String("Uint8Array")
-                // [
-                //     (Some(String("mem.buffer")), None),
-                //     (None, Some(201441296)),
-                //     (None, Some(16)),
-                // ];
-                "Uint8Array" => Some(JsValue::Memory {
-                    address: argument_list[1].1.unwrap(),
-                    len: argument_list[2].1.unwrap(),
-                }),
-                "Date" => Some(JsValue::String("Date".to_string())),
-                "net_listener" => Some(JsValue::NetListener),
-                _ => None,
-            },
-            _ => None,
-        } {
-            return r;
-        } else {
-            panic!("Not implemented {:?} {:?}", target, argument_list);
-        }
+        target: i64,
+        argument_list: Vec<(i64, bool)>,
+    ) -> Option<(i64, bool)> {
+        self.shared_state()
+            .js
+            .reflect_construct(target, argument_list)
     }
+
     fn get_i32(&self, sp: i32) -> i32 {
         let spu = sp as usize;
         as_i32_le(self.mem_slice(spu, spu + 8))
@@ -501,6 +340,16 @@ trait ContextHelpers {
     fn _get_bytes(&self, address: usize, ln: usize) -> &[u8] {
         self.mem_slice(address, address + ln)
     }
+    fn get_static_string(&self, sp: i32) -> &'static str {
+        let key = str::from_utf8(self.get_bytes(sp)).unwrap();
+        match self.shared_state().js.static_strings.get(&key) {
+            Some(v) => v,
+            None => {
+                panic!("No existing static string matching {:?}", key);
+            }
+        }
+    }
+
     fn get_string(&self, sp: i32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
@@ -530,54 +379,17 @@ trait ContextHelpers {
         self.set_i32(addr, self.store_value_bytes(byte_references))
     }
     fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
-        let reference = self.values().len() as i32;
-        self.values().push(JsValue::Bytes(b));
-        reference
+        self.shared_state().js.pool_add(js::Value::Bytes(b)) as i32
     }
-    fn store_value(&self, addr: i32, jsv: JsValue) {
-        let nan_head = 0x7FF80000;
-        match jsv {
-            JsValue::Int(int) => {
-                if int == 0 {
-                    self.set_u32(addr + 4, nan_head);
-                    self.set_u32(addr, 1);
-                    return;
-                }
-                self.set_f64(addr, int as f64);
-            }
-            JsValue::Null => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 2);
-            }
-            JsValue::True => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 3);
-            }
-            JsValue::False => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 4);
-            }
-            _ => {
-                let reference = self.values().len() as i32;
-                self.values().push(jsv);
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, reference as u32);
-            }
-        }
+    fn store_value(&self, addr: i32, jsv: (i64, bool)) {
+        let b = js::store_value(jsv);
+        let addru = addr as usize;
+        self.mut_mem_slice(addru, addru + 8).copy_from_slice(&b)
     }
     fn store_string(&self, address: i32, val: String) {
         self.set_i32(address, self.store_value_bytes(val.into_bytes()));
     }
-    // get_string
-    fn load_string(&self, address: i32) -> String {
-        let reference = self.get_i32(address);
-        let b = match self.values()[reference as usize] {
-            JsValue::Bytes(ref b) => b,
-            _ => panic!("load_string needs bytes"),
-        };
-        str::from_utf8(&b).unwrap().to_string()
-    }
-    fn load_slice_of_values(&self, address: i32) -> Vec<(Option<&JsValue>, Option<i32>)> {
+    fn load_slice_of_values(&self, address: i32) -> Vec<(i64, bool)> {
         let mut out = Vec::new();
         let array = self.get_i32(address);
         let len = self.get_i32(address + 8);
@@ -586,16 +398,9 @@ trait ContextHelpers {
         }
         out
     }
-    fn load_value(&self, address: i32) -> (Option<&JsValue>, Option<i32>) {
-        let float = self.get_f64(address);
-        let intfloat = float as i32;
-
-        if float == (intfloat) as f64 {
-            //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
-            return (None, Some(intfloat));
-        }
-        let reference = self.get_i32(address);
-        return (Some(&self.values()[reference as usize]), None);
+    fn load_value(&self, address: i32) -> (i64, bool) {
+        let addru = address as usize;
+        js::load_value(&self.mem_slice(addru, addru + 8))
     }
 }
 
@@ -632,33 +437,39 @@ extern "C" fn go_syscall(_sp: i32) {
 
 extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    fc.store_value(sp + 24, JsValue::String(fc.get_string(sp + 8).to_string()));
+    fc.store_value(
+        sp + 24,
+        (
+            fc.shared_state()
+                .js
+                .pool_add(js::Value::String(fc.get_string(sp + 8).to_string())),
+            true,
+        ),
+    );
 }
 
 extern "C" fn go_js_value_get(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    let result = fc.reflect_get(
-        &fc.load_value(sp + 8).0.unwrap(),
-        &JsValue::String(fc.get_string(sp + 16).to_string()),
-    );
+    let result = fc
+        .reflect_get(fc.load_value(sp + 8).0, &fc.get_static_string(sp + 16))
+        .unwrap();
     fc.store_value(sp + 32, result);
 }
 extern "C" fn go_js_value_set(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    fc.reflect_set(
-        fc.load_value(sp + 8).0.unwrap(),
-        fc.get_string(sp + 16),
-        fc.load_value(sp + 32).0.unwrap(),
+    // TODO check that return of load_value is actually a ref
+    fc.shared_state().js.reflect_set(
+        fc.load_value(sp + 8).0,
+        fc.get_static_string(sp + 16),
+        fc.load_value(sp + 32).0,
     );
 }
 extern "C" fn go_js_value_index(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     fc.store_value(
         sp + 24,
-        fc.reflect_get(
-            fc.load_value(sp + 8).0.unwrap(),
-            &JsValue::Int64(fc.get_i64(sp + 16)),
-        ),
+        fc.reflect_get_index(fc.load_value(sp + 8).0, fc.get_i64(sp + 16))
+            .unwrap(),
     );
 }
 extern "C" fn go_js_value_set_index(_sp: i32) {
@@ -670,36 +481,25 @@ extern "C" fn go_js_value_invoke(_sp: i32) {
 extern "C" fn go_js_value_call(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
-    let g = JsValue::String(fc.get_string(sp + 16).to_string());
-    let m = fc.reflect_get(v.0.unwrap(), &g);
+    let m = fc.reflect_get(v.0, &fc.get_static_string(sp + 16)).unwrap();
     let args = fc.load_slice_of_values(sp + 32);
-    let result = fc.reflect_apply(&m, v.0.unwrap(), args);
+    let result = fc.reflect_apply(m.0, v.0, args).unwrap();
     // TODO: catch error and error
     fc.store_value(sp + 56, result);
     fc.set_bool(sp + 64, true);
 }
 extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    let v = fc
-        .load_value(sp + 8)
-        .0
-        .expect("Reflect.construct doesn't take an int");
+    let v = fc.load_value(sp + 8).0;
     let args = fc.load_slice_of_values(sp + 16);
-    let result = fc.reflect_construct(v, args);
+    let result = fc.reflect_construct(v, args).unwrap();
     fc.store_value(sp + 40, result);
     fc.set_bool(sp + 48, true);
 }
 extern "C" fn go_js_value_length(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
-    let ln = match v.0 {
-        Some(jsv) => match jsv {
-            JsValue::Array(v) => v.len(),
-            _ => 0,
-        },
-        None => 0,
-    };
-    fc.set_i64(sp + 16, ln as i64);
+    fc.set_i64(sp + 16, fc.value_length(v.0).unwrap());
 }
 extern "C" fn go_js_value_prepare_string(_sp: i32) {
     println!("js_value_prepare_string")
@@ -749,9 +549,8 @@ unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
 
-    let values = fc.values();
-    let b = match values[reference as usize] {
-        JsValue::Bytes(ref b) => b,
+    let b = match fc.shared_state().js.pool_get(reference as i64).unwrap() {
+        js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
@@ -760,10 +559,10 @@ unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
 unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
-    let values = fc.values();
-    let b = match values[reference as usize] {
-        JsValue::Bytes(ref b) => b,
-        _ => panic!("prepare_bytes needs bytes"),
+
+    let b = match fc.shared_state().js.pool_get(reference as i64).unwrap() {
+        js::Value::Bytes(ref b) => b,
+        _ => panic!("load_bytes needs bytes"),
     };
     fc.set_i64(sp + 16, b.len() as i64);
 }
@@ -1087,7 +886,13 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("host state is not a SharedState");
 
-        if shared_state.pending_event_ref != 0 {
+        if !shared_state.call_queue.is_empty() {
+            // all callbacks currently just set the pending event
+            shared_state.js.add_object_value(
+                7,
+                "_pendingEvent",
+                (shared_state.call_queue.pop_front().unwrap(), true),
+            );
             continue;
         }
         // TODO: poll with timeout if there is a callback that needs to run
@@ -1097,52 +902,52 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             continue;
         }
         // TODO: don't reallocate
-        if !shared_state.net_pool.is_empty() {
-            let mut events = mio::Events::with_capacity(1024);
-            shared_state.poll.poll(&mut events, None).unwrap();
-            let mut args = Vec::new();
-            for event in events.iter() {
-                args.push(JsValue::Int(event.token().0 as i32));
-                let to_add = if let Some(ntcp) = shared_state.net_pool.get_ref(event.token().0) {
-                    match ntcp {
-                        NetTcp::Listener(listener) => {
-                            let (mut stream, _) = listener.accept().unwrap();
-                            Some(NetTcp::Stream(stream))
-                        }
-                        NetTcp::Stream(_) => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some(ntcp) = to_add {
-                    match ntcp {
-                        NetTcp::Listener(_) => {}
-                        NetTcp::Stream(stream) => {
-                            let id = shared_state.net_pool.next_id();
-                            shared_state
-                                .poll
-                                .register(
-                                    &stream,
-                                    mio::Token(id),
-                                    mio::Ready::readable() | mio::Ready::writable(),
-                                    mio::PollOpt::edge(),
-                                )
-                                .unwrap();
-                            shared_state.net_pool.add(NetTcp::Stream(stream));
-                            args.push(JsValue::Int(id as i32));
-                        }
-                    }
-                }
-            }
-            let id = shared_state.net_callback_id;
-            shared_state.add_pending_event(id, Some(args));
-            continue;
-        }
+        // if !shared_state.net_pool.is_empty() {
+        //     let mut events = mio::Events::with_capacity(1024);
+        //     shared_state.poll.poll(&mut events, None).unwrap();
+        //     let mut args = Vec::new();
+        //     for event in events.iter() {
+        //         args.push(JsValue::Int(event.token().0 as i32));
+        //         let to_add = if let Some(ntcp) = shared_state.net_pool.get_ref(event.token().0) {
+        //             match ntcp {
+        //                 NetTcp::Listener(listener) => {
+        //                     let (mut stream, _) = listener.accept().unwrap();
+        //                     Some(NetTcp::Stream(stream))
+        //                 }
+        //                 NetTcp::Stream(_) => None,
+        //             }
+        //         } else {
+        //             None
+        //         };
+        //         if let Some(ntcp) = to_add {
+        //             match ntcp {
+        //                 NetTcp::Listener(_) => {}
+        //                 NetTcp::Stream(stream) => {
+        //                     let id = shared_state.net_pool.next_id();
+        //                     shared_state
+        //                         .poll
+        //                         .register(
+        //                             &stream,
+        //                             mio::Token(id),
+        //                             mio::Ready::readable() | mio::Ready::writable(),
+        //                             mio::PollOpt::edge(),
+        //                         )
+        //                         .unwrap();
+        //                     shared_state.net_pool.add(NetTcp::Stream(stream));
+        //                     args.push(JsValue::Int(id as i32));
+        //                 }
+        //             }
+        //         }
+        //     }
+        //     let id = shared_state.net_callback_id;
+        //     shared_state.add_pending_event(id, Some(args));
+        //     continue;
+        // }
 
-        if shared_state.exited == false {
-            shared_state.add_pending_event(0, None);
-            continue;
-        }
+        // if shared_state.exited == false {
+        //     shared_state.add_pending_event(0, None);
+        //     continue;
+        // }
 
         break;
     }
@@ -1200,7 +1005,6 @@ mod tests {
             mem: Box::new(mem),
         };
         let tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
-        tc.values(); //prevents the mem from being freed?
         tc
     }
 
@@ -1233,6 +1037,4 @@ mod tests {
         assert_eq!(-2147483647, tc.get_i32(0));
     }
 
-    // #[test]
-    // fn ms() {}
 }
