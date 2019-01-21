@@ -1,6 +1,5 @@
-set -o xtrace
-set -o pipefail
-set -e
+set -Eeuxo pipefail
+
 cd "$(dirname ${BASH_SOURCE[0]})"
 
 cd wasabi

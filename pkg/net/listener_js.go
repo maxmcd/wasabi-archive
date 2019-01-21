@@ -11,15 +11,14 @@ var connections map[int32](chan int)
 func init() {
 	connections = make(map[int32](chan int))
 	callback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		connections[int32(0)] <- 1
-		// for i, _ := range args {
-		// 	if i%2 == 0 {
-		// 		continue
-		// 	}
-		// 	token := args[i].Int()
-		// 	new_token := args[i+1].Int()
-		// 	connections[int32(token)] <- new_token
-		// }
+		for i, _ := range args {
+			if i%2 == 1 {
+				continue
+			}
+			token := args[i].Int()
+			new_token := args[i+1].Int()
+			connections[int32(token)] <- new_token
+		}
 		return nil
 	})
 	nlr := js.Global().Get("net_listener").New()
@@ -55,6 +54,13 @@ func readConn(id int32, b []byte) int32
 
 func (c *Conn) Read(b []byte) (int, error) {
 	ln := readConn(c.token, b)
+	return int(ln), nil
+}
+
+func writeConn(id int32, b []byte) int32
+
+func (c *Conn) Write(b []byte) (int, error) {
+	ln := writeConn(c.token, b)
 	return int(ln), nil
 }
 

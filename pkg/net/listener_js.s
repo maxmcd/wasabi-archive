@@ -15,3 +15,7 @@ TEXT ·acceptTcp(SB), NOSPLIT, $0
 TEXT ·readConn(SB), NOSPLIT, $0
     CallImport
     RET
+
+TEXT ·writeConn(SB), NOSPLIT, $0
+    CallImport
+    RET

@@ -5,12 +5,10 @@ use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use js;
-use mio;
-use mio::net::TcpListener;
+use network::NetLoop;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::slice;
@@ -48,98 +46,13 @@ impl PartialEq for Callback {
 }
 
 #[derive(Debug)]
-struct NetPool {
-    pointer: usize,
-    items: Vec<Option<NetTcp>>,
-}
-
-impl NetPool {
-    fn new() -> Self {
-        Self {
-            pointer: 0,
-            items: Vec::new(),
-        }
-    }
-    fn add(&mut self, nt: NetTcp) -> usize {
-        let id = self.pointer;
-        if self.pointer == self.items.len() {
-            self.items.push(Some(nt));
-            self.pointer += 1;
-        } else {
-            self.items[self.pointer] = Some(nt);
-            for ref item in self.items[self.pointer + 1..].iter() {
-                self.pointer += 1;
-                match item {
-                    None => {
-                        return self.pointer;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        id
-    }
-    fn next_id(&self) -> usize {
-        self.pointer
-    }
-    fn get(&self, i: usize) -> Option<&Option<NetTcp>> {
-        self.items.get(i)
-    }
-    fn get_ref(&self, i: usize) -> Option<&NetTcp> {
-        match self.items.get(i) {
-            Some(ontcp) => match ontcp {
-                Some(ntcp) => Some(ntcp),
-                None => None,
-            },
-            None => None,
-        }
-    }
-    fn get_listener_ref(&self, i: usize) -> Option<&mio::net::TcpListener> {
-        match self.get_ref(i) {
-            Some(ntcp) => match ntcp {
-                NetTcp::Listener(listener) => Some(&listener),
-                _ => None,
-            },
-            None => None,
-        }
-    }
-    fn get_stream_ref(&self, i: usize) -> Option<&mio::net::TcpStream> {
-        match self.get_ref(i) {
-            Some(ntcp) => match ntcp {
-                NetTcp::Stream(s) => Some(&s),
-                _ => None,
-            },
-            None => None,
-        }
-    }
-    fn is_empty(&self) -> bool {
-        self.pointer == 0
-    }
-    fn remove(&mut self, i: usize) {
-        if i > self.items.len() {
-            panic!("index out of range")
-        }
-        self.items.remove(i);
-        if i < self.pointer {
-            self.pointer = i
-        }
-    }
-}
-
-#[derive(Debug)]
-enum NetTcp {
-    Listener(mio::net::TcpListener),
-    Stream(mio::net::TcpStream),
-}
-
-#[derive(Debug)]
 struct SharedState {
     definition: Option<*mut VMMemoryDefinition>,
     pending_event_ref: i32,
     exited: bool,
     poll: mio::Poll,
-    net_pool: NetPool,
-    net_callback_id: i32,
+    net_loop: NetLoop,
+    net_callback_id: i64,
     next_callback_timeout_id: i32,
     callback_heap: BinaryHeap<Callback>,
     callback_map: HashMap<i32, bool>,
@@ -155,7 +68,7 @@ impl SharedState {
             definition: None,
             exited: false,
             poll: mio::Poll::new().unwrap(),
-            net_pool: NetPool::new(),
+            net_loop: NetLoop::new(),
             net_callback_id: 0,
             next_callback_timeout_id: 1,
             pending_event_ref: 0,
@@ -163,17 +76,17 @@ impl SharedState {
             call_queue: VecDeque::new(),
         }
     }
-    // fn add_value(&mut self, value: JsValue) -> i32 {
-    //     let reference = self.values.len();
-    //     self.values.push(value);
-    //     reference as i32
-    // }
-    // fn add_pending_event(&mut self, id: i32, args: Option<Vec<JsValue>>) {
-    //     let pending_event = JsValue::PendingEvent { id: id, args: args };
-    //     let reference = self.values.len();
-    //     self.values.push(pending_event);
-    //     self.pending_event_ref = reference as i32;
-    // }
+    fn add_pending_event(&mut self, id: i64, args: Vec<(i64, bool)>) {
+        println!("Add pending event {:?}", (id, &args));
+        let pe = self.js.slab_add(js::Value::Object {
+            name: "pending_event",
+            values: HashMap::new(),
+        });
+        self.js.add_object_value(pe, "id", (id, false));
+        self.js.add_object(pe, "this");
+        self.js.add_array(pe, "args", args);
+        self.js.add_object_value(7, "_pendingEvent", (pe, true))
+    }
 }
 
 struct FuncContext {
@@ -249,8 +162,16 @@ trait ContextHelpers {
 
         match (target_name, this_argument_name) {
             ("getTimezoneOffset", "Date") => Some((0, false)),
+            ("register", "net_listener") => {
+                if let js::Value::Object { values, .. } =
+                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
+                {
+                    self.shared_state().net_callback_id = values.get("id").unwrap().0;
+                }
+                Some((0, true))
+            }
             ("_makeFuncWrapper", "this") => {
-                let wf = self.shared_state().js.pool_add(js::Value::Object {
+                let wf = self.shared_state().js.slab_add(js::Value::Object {
                     name: "wrappedFunc",
                     values: HashMap::new(),
                 });
@@ -263,7 +184,7 @@ trait ContextHelpers {
             }
             ("getRandomValues", "crypto") => {
                 if let js::Value::Memory { address, len } =
-                    self.shared_state().js.pool_get(argument_list[0].0).unwrap()
+                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
                 {
                     thread_rng()
                         .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
@@ -280,7 +201,7 @@ trait ContextHelpers {
                 //     callback: (34, true),
                 // ];
                 if let js::Value::Memory { address, len } =
-                    self.shared_state().js.pool_get(argument_list[1].0).unwrap()
+                    self.shared_state().js.slab_get(argument_list[1].0).unwrap()
                 {
                     print!(
                         "{}",
@@ -379,7 +300,7 @@ trait ContextHelpers {
         self.set_i32(addr, self.store_value_bytes(byte_references))
     }
     fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
-        self.shared_state().js.pool_add(js::Value::Bytes(b)) as i32
+        self.shared_state().js.slab_add(js::Value::Bytes(b)) as i32
     }
     fn store_value(&self, addr: i32, jsv: (i64, bool)) {
         let b = js::store_value(jsv);
@@ -442,7 +363,7 @@ extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
         (
             fc.shared_state()
                 .js
-                .pool_add(js::Value::String(fc.get_string(sp + 8).to_string())),
+                .slab_add(js::Value::String(fc.get_string(sp + 8).to_string())),
             true,
         ),
     );
@@ -549,7 +470,7 @@ unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
 
-    let b = match fc.shared_state().js.pool_get(reference as i64).unwrap() {
+    let b = match fc.shared_state().js.slab_get(reference as i64).unwrap() {
         js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
@@ -560,7 +481,7 @@ unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
 
-    let b = match fc.shared_state().js.pool_get(reference as i64).unwrap() {
+    let b = match fc.shared_state().js.slab_get(reference as i64).unwrap() {
         js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
@@ -571,9 +492,11 @@ unsafe extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
     println!("go_listen_tcp");
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
-    println!("{:?}", addr);
-    let listener = TcpListener::bind(&addr.parse().unwrap()).unwrap();
-    let id = fc.shared_state().net_pool.add(NetTcp::Listener(listener));
+    let id = fc
+        .shared_state()
+        .net_loop
+        .tcp_listen(&addr.parse().unwrap())
+        .unwrap();
     fc.set_i32(sp + 24, id as i32);
 }
 
@@ -581,18 +504,25 @@ unsafe extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     println!("go_accept_tcp");
     let fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
-    fc.shared_state()
-        .poll
-        .register(
-            fc.shared_state()
-                .net_pool
-                .get_listener_ref(token as usize)
-                .unwrap(),
-            mio::Token(token as usize),
-            mio::Ready::readable() | mio::Ready::writable(),
-            mio::PollOpt::edge(),
-        )
-        .unwrap();
+}
+
+unsafe extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+    println!("go_write_tcp_conn");
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let addr = fc.get_i32(sp + 16);
+    let ln = fc.get_i32(sp + 24);
+    // let mut stream = fc
+    //     .shared_state()
+    //     .net_slab
+    //     .get_stream_ref(id as usize)
+    //     .unwrap();
+    // println!("{:?}", stream);
+    // stream
+    //     .write(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
+    //     .unwrap();
+
+    println!("{:?}", (id, addr, ln));
 }
 
 unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -601,15 +531,15 @@ unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     let id = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
-    let mut stream = fc
-        .shared_state()
-        .net_pool
-        .get_stream_ref(id as usize)
-        .unwrap();
-    println!("{:?}", stream);
-    stream
-        .read(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
-        .unwrap();
+    // let mut stream = fc
+    //     .shared_state()
+    //     .net_slab
+    //     .get_stream_ref(id as usize)
+    //     .unwrap();
+    // println!("{:?}", stream);
+    // stream
+    //     .read(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
+    //     .unwrap();
 
     println!("{:?}", (id, addr, ln));
 }
@@ -692,6 +622,10 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
         (
             "github.com/maxmcd/wasabi/pkg/net.readConn",
             go_read_tcp_conn as *const VMFunctionBody,
+        ),
+        (
+            "github.com/maxmcd/wasabi/pkg/net.writeConn",
+            go_write_tcp_conn as *const VMFunctionBody,
         ),
         (
             "syscall/wasm.loadBytes",
@@ -901,53 +835,11 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             thread::sleep(sleep_time);
             continue;
         }
-        // TODO: don't reallocate
-        // if !shared_state.net_pool.is_empty() {
-        //     let mut events = mio::Events::with_capacity(1024);
-        //     shared_state.poll.poll(&mut events, None).unwrap();
-        //     let mut args = Vec::new();
-        //     for event in events.iter() {
-        //         args.push(JsValue::Int(event.token().0 as i32));
-        //         let to_add = if let Some(ntcp) = shared_state.net_pool.get_ref(event.token().0) {
-        //             match ntcp {
-        //                 NetTcp::Listener(listener) => {
-        //                     let (mut stream, _) = listener.accept().unwrap();
-        //                     Some(NetTcp::Stream(stream))
-        //                 }
-        //                 NetTcp::Stream(_) => None,
-        //             }
-        //         } else {
-        //             None
-        //         };
-        //         if let Some(ntcp) = to_add {
-        //             match ntcp {
-        //                 NetTcp::Listener(_) => {}
-        //                 NetTcp::Stream(stream) => {
-        //                     let id = shared_state.net_pool.next_id();
-        //                     shared_state
-        //                         .poll
-        //                         .register(
-        //                             &stream,
-        //                             mio::Token(id),
-        //                             mio::Ready::readable() | mio::Ready::writable(),
-        //                             mio::PollOpt::edge(),
-        //                         )
-        //                         .unwrap();
-        //                     shared_state.net_pool.add(NetTcp::Stream(stream));
-        //                     args.push(JsValue::Int(id as i32));
-        //                 }
-        //             }
-        //         }
-        //     }
-        //     let id = shared_state.net_callback_id;
-        //     shared_state.add_pending_event(id, Some(args));
-        //     continue;
-        // }
 
-        // if shared_state.exited == false {
-        //     shared_state.add_pending_event(0, None);
-        //     continue;
-        // }
+        if shared_state.exited == false {
+            shared_state.add_pending_event(0, Vec::new());
+            continue;
+        }
 
         break;
     }
@@ -1028,13 +920,13 @@ mod tests {
         assert_eq!(argv, 4184);
     }
 
-    #[test]
-    fn i32_get_and_set() {
-        let tc = test_context();
-        tc.set_i32(0, 2147483647);
-        assert_eq!(2147483647, tc.get_i32(0));
-        tc.set_i32(0, -2147483647);
-        assert_eq!(-2147483647, tc.get_i32(0));
-    }
+    // #[test]
+    // fn i32_get_and_set() {
+    //     let tc = test_context();
+    //     tc.set_i32(0, 2147483647);
+    //     assert_eq!(2147483647, tc.get_i32(0));
+    //     tc.set_i32(0, -2147483647);
+    //     assert_eq!(-2147483647, tc.get_i32(0));
+    // }
 
 }

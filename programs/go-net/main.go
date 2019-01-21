@@ -20,6 +20,11 @@ func main() {
 		} else {
 			fmt.Println(ln, b)
 		}
+		if ln, err := c.Write([]byte("HTTP/1.1 200 OK")); err != nil {
+			panic(err)
+		} else {
+			fmt.Println(ln, b)
+		}
 	}
 	// wnet.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	// 	fmt.Printf("%s %s\n", r.Method, r.URL.String())

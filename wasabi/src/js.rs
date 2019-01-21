@@ -1,5 +1,5 @@
 use bytes;
-use pool::Pool;
+use slab::Slab;
 use std::collections::HashMap;
 use std::i32;
 
@@ -30,7 +30,7 @@ pub enum Value {
 
 #[derive(Debug)]
 pub struct Js {
-    pool: Pool<Value>,
+    slab: Slab<Value>,
     pub static_strings: HashMap<&'static str, &'static str>,
 }
 
@@ -61,17 +61,17 @@ pub fn store_value(r: (i64, bool)) -> [u8; 8] {
 }
 
 impl Js {
-    pub fn pool_add(&mut self, v: Value) -> i64 {
-        self.pool.add(v) as i64
+    pub fn slab_add(&mut self, v: Value) -> i64 {
+        self.slab.insert(v) as i64
     }
-    pub fn pool_get(&self, r: i64) -> Option<&Value> {
-        self.pool.get(r as usize)
+    pub fn slab_get(&self, r: i64) -> Option<&Value> {
+        self.slab.get(r as usize)
     }
-    pub fn pool_get_mut(&mut self, r: i64) -> Option<&mut Value> {
-        self.pool.get_mut(r as usize)
+    pub fn slab_get_mut(&mut self, r: i64) -> Option<&mut Value> {
+        self.slab.get_mut(r as usize)
     }
     pub fn get_object_name(&self, r: i64) -> Option<&'static str> {
-        match self.pool_get(r) {
+        match self.slab_get(r) {
             Some(o) => match o {
                 Value::Object { name, .. } => Some(name),
                 _ => None,
@@ -81,11 +81,11 @@ impl Js {
     }
     pub fn add_object(&mut self, r: i64, name: &'static str) -> i64 {
         self.static_strings.insert(name, name);
-        let new_r = self.pool.add(Value::Object {
+        let new_r = self.slab.insert(Value::Object {
             name: name,
             values: HashMap::new(),
         }) as i64;
-        if let Some(o) = self.pool.get_mut(r as usize) {
+        if let Some(o) = self.slab.get_mut(r as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, (new_r, true));
@@ -101,8 +101,8 @@ impl Js {
     }
     pub fn add_array(&mut self, r: i64, name: &'static str, args: Vec<(i64, bool)>) -> i64 {
         self.static_strings.insert(name, name);
-        let new_r = self.pool.add(Value::Array(args)) as i64;
-        if let Some(o) = self.pool.get_mut(r as usize) {
+        let new_r = self.slab.insert(Value::Array(args)) as i64;
+        if let Some(o) = self.slab.get_mut(r as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, (new_r, true));
@@ -118,7 +118,7 @@ impl Js {
     }
     pub fn add_object_value(&mut self, r: i64, name: &'static str, value: (i64, bool)) {
         self.static_strings.insert(name, name);
-        if let Some(o) = self.pool.get_mut(r as usize) {
+        if let Some(o) = self.slab.get_mut(r as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, value);
@@ -132,7 +132,7 @@ impl Js {
         }
     }
     pub fn value_length(&self, target: i64) -> Option<(i64)> {
-        if let Some(v) = self.pool_get(target) {
+        if let Some(v) = self.slab_get(target) {
             match v {
                 Value::Array(rs) => Some(rs.len() as i64),
                 _ => None,
@@ -142,7 +142,7 @@ impl Js {
         }
     }
     pub fn reflect_get_index(&self, target: i64, property_key: i64) -> Option<(i64, bool)> {
-        if let Some(o) = self.pool_get(target) {
+        if let Some(o) = self.slab_get(target) {
             match o {
                 Value::Array(items) => Some(items[property_key as usize]),
                 _ => None,
@@ -152,7 +152,7 @@ impl Js {
         }
     }
     pub fn reflect_get(&self, target: i64, property_key: &'static str) -> Option<(i64, bool)> {
-        if let Some(o) = self.pool_get(target) {
+        if let Some(o) = self.slab_get(target) {
             match o {
                 Value::Object { values, .. } => {
                     if let Some(s) = values.get(property_key) {
@@ -174,7 +174,7 @@ impl Js {
         argument_list: Vec<(i64, bool)>,
     ) -> Option<(i64, bool)> {
         // TODO: don't pass around arbitrary ints as references within a function
-        let name = match self.pool_get(target) {
+        let name = match self.slab_get(target) {
             Some(o) => match o {
                 Value::Object { name, .. } => match name {
                     &"Uint8Array" => Some(0),
@@ -189,25 +189,28 @@ impl Js {
         match name {
             Some(key) => match key {
                 0 => Some((
-                    self.pool_add(Value::Memory {
+                    self.slab_add(Value::Memory {
                         address: argument_list[1].0,
                         len: argument_list[2].0,
                     }),
                     true,
                 )), //Uint8Array
                 1 => Some((target, true)), //Date
-                2 => None,                 //net_listener
+                2 => {
+                    let nl = self.slab_add(Value::Object {
+                        name: "net_listener",
+                        values: HashMap::new(),
+                    });
+                    self.add_object(nl, "register");
+                    Some((nl, true))
+                } //net_listener
                 _ => None,
             },
             None => None,
         }
     }
-    pub fn set_pending_event(&mut self, target: i64) {
-        let this_id = 7;
-    }
-
     pub fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
-        if let Some(o) = self.pool.get_mut(target as usize) {
+        if let Some(o) = self.slab.get_mut(target as usize) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(property_key, (value, true));
@@ -218,25 +221,25 @@ impl Js {
     }
     pub fn new() -> Self {
         let mut js = Self {
-            pool: Pool::new(),
+            slab: Slab::new(),
             static_strings: HashMap::new(),
         };
         // These initial indexes must map up with Go's underlying assumptions
         // https://github.com/golang/go/blob/8e50e48f4/src/syscall/js/js.go#L75-L83
-        js.pool_add(Value::NaN); //0 NaN
-        js.pool_add(Value::Int(0)); //1 0
-        js.pool_add(Value::Null); //2 null
-        js.pool_add(Value::True); //3 true
-        js.pool_add(Value::False); //4 false
-        let global = js.pool_add(Value::Object {
+        js.slab_add(Value::NaN); //0 NaN
+        js.slab_add(Value::Int(0)); //1 0
+        js.slab_add(Value::Null); //2 null
+        js.slab_add(Value::True); //3 true
+        js.slab_add(Value::False); //4 false
+        let global = js.slab_add(Value::Object {
             name: "global",
             values: HashMap::new(),
         }); //5 global
-        let mem = js.pool_add(Value::Object {
+        let mem = js.slab_add(Value::Object {
             name: "mem",
             values: HashMap::new(),
         }); //6 this._inst.exports.mem
-        let this = js.pool_add(Value::Object {
+        let this = js.slab_add(Value::Object {
             name: "this",
             values: HashMap::new(),
         }); //7 this
@@ -320,12 +323,12 @@ mod tests {
     }
 
     #[test]
-    fn pool_get() {
+    fn slab_get() {
         let j = Js::new();
-        match j.pool_get(0).unwrap() {
+        match j.slab_get(0).unwrap() {
             Value::NaN => {}
             _ => {
-                panic!("incorrect return value for pool_get");
+                panic!("incorrect return value for slab_get");
             }
         }
     }

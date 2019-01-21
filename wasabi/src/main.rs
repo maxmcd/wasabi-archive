@@ -1,7 +1,6 @@
 //! Runtime is a wasm go runtime
 
-// #![deny(missing_docs, trivial_numeric_casts, unstable_features)]
-#![deny(trivial_numeric_casts, unstable_features)]
+#![deny(missing_docs, trivial_numeric_casts, unstable_features)]
 #![warn(unused_import_braces)]
 #![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
 #![cfg_attr(
@@ -32,6 +31,7 @@ extern crate pretty_env_logger;
 extern crate rand;
 extern crate reqwest;
 extern crate serde_derive;
+extern crate slab;
 extern crate target_lexicon;
 extern crate wabt;
 extern crate wasmtime_environ;
@@ -40,8 +40,8 @@ extern crate wasmtime_runtime;
 
 mod bytes;
 mod go;
-pub mod js;
-mod pool;
+mod js;
+mod network;
 
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;

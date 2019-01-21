@@ -511,7 +511,7 @@ dependencies = [
  "http 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "indexmap 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "string 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -744,7 +744,7 @@ dependencies = [
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "miow 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "net2 0.2.33 (registry+https://github.com/rust-lang/crates.io-index)",
- "slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -1291,7 +1291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "slab"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -1514,7 +1514,7 @@ dependencies = [
  "mio 0.6.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "num_cpus 1.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-executor 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -1553,7 +1553,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "crossbeam-utils 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
- "slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-executor 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -1743,12 +1743,13 @@ dependencies = [
  "reqwest 0.9.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.84 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_derive 1.0.84 (registry+https://github.com/rust-lang/crates.io-index)",
+ "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wabt 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0",
- "wasmtime-jit 0.1.0",
- "wasmtime-obj 0.1.0",
- "wasmtime-runtime 0.1.0",
+ "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
+ "wasmtime-jit 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
+ "wasmtime-obj 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
+ "wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
 ]
 
 [[package]]
@@ -1759,6 +1760,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "wasmtime-environ"
 version = "0.1.0"
+source = "git+https://github.com/maxmcd/wasmtime#18aa0db9ca5e103d669a76961c2895e01de18f70"
 dependencies = [
  "cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-codegen 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1771,6 +1773,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-jit"
 version = "0.1.0"
+source = "git+https://github.com/maxmcd/wasmtime#18aa0db9ca5e103d669a76961c2895e01de18f70"
 dependencies = [
  "cranelift-codegen 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-entity 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1780,23 +1783,25 @@ dependencies = [
  "failure_derive 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "region 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0",
- "wasmtime-runtime 0.1.0",
+ "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
+ "wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
 ]
 
 [[package]]
 name = "wasmtime-obj"
 version = "0.1.0"
+source = "git+https://github.com/maxmcd/wasmtime#18aa0db9ca5e103d669a76961c2895e01de18f70"
 dependencies = [
  "cranelift-codegen 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-entity 0.26.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "faerie 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0",
+ "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
 ]
 
 [[package]]
 name = "wasmtime-runtime"
 version = "0.1.0"
+source = "git+https://github.com/maxmcd/wasmtime#18aa0db9ca5e103d669a76961c2895e01de18f70"
 dependencies = [
  "bindgen 0.46.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1812,7 +1817,7 @@ dependencies = [
  "memoffset 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "region 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0",
+ "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime)",
  "winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -2027,7 +2032,7 @@ dependencies = [
 "checksum serde_json 1.0.34 (registry+https://github.com/rust-lang/crates.io-index)" = "bdf540260cfee6da923831f4776ddc495ada940c30117977c70f1313a6130545"
 "checksum serde_urlencoded 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)" = "d48f9f99cd749a2de71d29da5f948de7f2764cc5a9d7f3c97e3514d4ee6eabf2"
 "checksum siphasher 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "0b8de496cf83d4ed58b6be86c3a275b8602f6ffe98d3024a869e124147a9a3ac"
-"checksum slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)" = "5f9776d6b986f77b35c6cf846c11ad986ff128fe0b2b63a3628e3755e8d3102d"
+"checksum slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "c111b5bd5695e56cffe5129854aa230b39c93a305372fdbb2668ca2394eea9f8"
 "checksum smallvec 0.6.7 (registry+https://github.com/rust-lang/crates.io-index)" = "b73ea3738b47563803ef814925e69be00799a8c07420be8b996f8e98fb2336db"
 "checksum stable_deref_trait 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "dba1a27d3efae4351c8051072d619e3ade2820635c3958d826bfea39d59b54c8"
 "checksum string 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "98998cced76115b1da46f63388b909d118a37ae0be0f82ad35773d4a4bc9d18d"
@@ -2077,6 +2082,10 @@ dependencies = [
 "checksum wabt-sys 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)" = "462336bb61096e64761730e0dea1bc8b777bd4e3689c7e813c81f1cfdf4e8a51"
 "checksum want 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)" = "797464475f30ddb8830cc529aaaae648d581f99e2036a928877dfde027ddf6b3"
 "checksum wasmparser 0.22.1 (registry+https://github.com/rust-lang/crates.io-index)" = "f46e666ecb4a406483a59a49f9d0c17f327e70da53a128eccddae2eadb95865c"
+"checksum wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime)" = "<none>"
+"checksum wasmtime-jit 0.1.0 (git+https://github.com/maxmcd/wasmtime)" = "<none>"
+"checksum wasmtime-obj 0.1.0 (git+https://github.com/maxmcd/wasmtime)" = "<none>"
+"checksum wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime)" = "<none>"
 "checksum which 2.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "b57acb10231b9493c8472b20cb57317d0679a49e0bdbee44b3b803a6473af164"
 "checksum winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "167dc9d6949a9b857f3451275e911c3f44255842c1f7a76f33c55103a909087a"
 "checksum winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)" = "92c1eb33641e276cfa214a0522acad57be5c56b10cb348b3c5117db75f3ac4b0"
