@@ -299,6 +299,9 @@ trait ContextHelpers {
         }
         self.set_i32(addr, self.store_value_bytes(byte_references))
     }
+    fn set_error(&self, addr: i32, err: std::io::Error) {
+        self.store_string(addr, err.to_string())
+    }
     fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
         self.shared_state().js.slab_add(js::Value::Bytes(b)) as i32
     }
@@ -429,7 +432,7 @@ extern "C" fn go_js_value_load_string(_sp: i32) {
     println!("js_value_load_string")
 }
 
-unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let exit_code = fc.get_i32(sp + 8);
     if exit_code != 0 {
@@ -438,12 +441,12 @@ unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
     fc.shared_state().exited = true;
 }
 
-unsafe extern "C" fn go_wasmwrite(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmwrite(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     print!("{}", fc.get_string(sp + 16));
 }
 
-unsafe extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
     let fc = FuncContext::new(vmctx);
@@ -451,12 +454,12 @@ unsafe extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 8 + 8, since_the_epoch.subsec_nanos() as i32);
 }
 
-unsafe extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     fc.set_i64(sp + 8, epoch_ns());
 }
 
-unsafe extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     // let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
     let addr = fc.get_i32(sp + 8);
@@ -464,7 +467,7 @@ unsafe extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
     thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
 }
 
-unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
@@ -477,7 +480,7 @@ unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
-unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
 
@@ -488,7 +491,7 @@ unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     fc.set_i64(sp + 16, b.len() as i64);
 }
 
-unsafe extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
     println!("go_listen_tcp");
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
@@ -500,7 +503,7 @@ unsafe extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 24, id as i32);
 }
 
-unsafe extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
     println!("go_accept_tcp {}", token);
@@ -512,7 +515,7 @@ unsafe extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 16, id as i32);
 }
 
-unsafe extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     println!("go_write_tcp_conn");
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -525,7 +528,7 @@ unsafe extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 40, written as i32);
 }
 
-unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     println!("go_read_tcp_conn");
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -538,20 +541,27 @@ unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 40, read as i32);
 }
 
-unsafe extern "C" fn go_lookup_ip(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_lookup_ip_addr(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
     // TODO handle error
-    let ips = resolve_host(&addr).unwrap();
-    fc.set_bool(sp + 24 + 4, true);
-    let mut byte_ips: Vec<Vec<u8>> = Vec::new();
-    for ip in ips.iter() {
-        match ip {
-            IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
-            IpAddr::V6(_) => {}
+    match resolve_host(&addr) {
+        Ok(ips) => {
+            fc.set_bool(sp + 24 + 4, true);
+            let mut byte_ips: Vec<Vec<u8>> = Vec::new();
+            for ip in ips.iter() {
+                match ip {
+                    IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
+                    IpAddr::V6(_) => {} //no IPV6 support
+                }
+            }
+            fc.set_byte_array_array(sp + 24, byte_ips)
+        }
+        Err(err) => {
+            fc.set_bool(sp + 24 + 4, false);
+            fc.set_error(sp + 24, err)
         }
     }
-    fc.set_byte_array_array(sp + 24, byte_ips)
 }
 
 fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
@@ -567,112 +577,40 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let call_conv = isa::CallConv::triple_default(&HOST);
     let pointer_type = types::Type::triple_pointer_type(&HOST);
 
+    #[cfg_attr(rustfmt, rustfmt_skip)]
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
+        ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
+        ("runtime.getRandomData", go_get_random_data as *const VMFunctionBody),
+        ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
+        ("runtime.scheduleTimeoutEvent", go_schedule_timeout_event as *const VMFunctionBody),
+        ("runtime.walltime", go_walltime as *const VMFunctionBody),
         ("runtime.wasmExit", go_wasmexit as *const VMFunctionBody),
         ("runtime.wasmWrite", go_wasmwrite as *const VMFunctionBody),
-        ("syscall.wasmWrite", go_wasmwrite as *const VMFunctionBody),
-        ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
-        ("runtime.walltime", go_walltime as *const VMFunctionBody),
-        ("syscall.Syscall", go_syscall as *const VMFunctionBody),
-        ("net.lookupHost", go_lookup_ip as *const VMFunctionBody),
         ("syscall.socket", go_debug as *const VMFunctionBody),
-        (
-            "runtime.scheduleTimeoutEvent",
-            go_schedule_timeout_event as *const VMFunctionBody,
-        ),
-        (
-            "runtime.clearTimeoutEvent",
-            go_clear_timeout_event as *const VMFunctionBody,
-        ),
-        (
-            "runtime.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.loadBytes",
-            go_load_bytes as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.prepareBytes",
-            go_prepare_bytes as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasabi/pkg/net.listenTcp",
-            go_listen_tcp as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasabi/pkg/net.acceptTcp",
-            go_accept_tcp as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasabi/pkg/net.readConn",
-            go_read_tcp_conn as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasabi/pkg/net.writeConn",
-            go_write_tcp_conn as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.loadBytes",
-            go_load_bytes as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.prepareBytes",
-            go_prepare_bytes as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.stringVal",
-            go_js_string_val as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueGet",
-            go_js_value_get as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueSet",
-            go_js_value_set as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueIndex",
-            go_js_value_index as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueSetIndex",
-            go_js_value_set_index as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueCall",
-            go_js_value_call as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueNew",
-            go_js_value_new as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueInvoke",
-            go_js_value_invoke as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueLength",
-            go_js_value_length as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valuePrepareString",
-            go_js_value_prepare_string as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueLoadString",
-            go_js_value_load_string as *const VMFunctionBody,
-        ),
+        ("syscall.Syscall", go_syscall as *const VMFunctionBody),
+        ("syscall.wasmWrite", go_wasmwrite as *const VMFunctionBody),
+        ("syscall/js.stringVal", go_js_string_val as *const VMFunctionBody),
+        ("syscall/js.valueCall", go_js_value_call as *const VMFunctionBody),
+        ("syscall/js.valueGet", go_js_value_get as *const VMFunctionBody),
+        ("syscall/js.valueIndex", go_js_value_index as *const VMFunctionBody),
+        ("syscall/js.valueInvoke", go_js_value_invoke as *const VMFunctionBody),
+        ("syscall/js.valueLength", go_js_value_length as *const VMFunctionBody),
+        ("syscall/js.valueLoadString", go_js_value_load_string as *const VMFunctionBody),
+        ("syscall/js.valueNew", go_js_value_new as *const VMFunctionBody),
+        ("syscall/js.valuePrepareString", go_js_value_prepare_string as *const VMFunctionBody),
+        ("syscall/js.valueSet", go_js_value_set as *const VMFunctionBody),
+        ("syscall/js.valueSetIndex", go_js_value_set_index as *const VMFunctionBody),
+        ("syscall/wasm.getRandomData", go_get_random_data as *const VMFunctionBody),
+        ("syscall/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
+        ("syscall/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody),
     ];
 
     for func in functions.iter() {
@@ -875,6 +813,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
 
         // If we have a setTimeout style call, sleep
         // TODO: actually make this play nice with other loop behavior
+        // If the call_queue has items
         if let Some(callback) = shared_state.callback_heap.pop() {
             let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
             thread::sleep(sleep_time);

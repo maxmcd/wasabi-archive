@@ -7,7 +7,24 @@ import (
 )
 
 func main() {
-	// fmt.Println("hi")
+	tcpHTTPServer()
+}
+
+func lookupIPAddr() {
+	addrs, err := wnet.LookupIPAddr("www")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(addrs)
+
+	addrs, err = wnet.LookupIPAddr("www.google.com")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(addrs)
+}
+
+func tcpHTTPServer() {
 	l := wnet.ListenTcp("127.0.0.1:8000")
 	for {
 		c, err := l.Accept()
@@ -30,8 +47,4 @@ wasabi`)); err != nil {
 			fmt.Println(ln)
 		}
 	}
-	// wnet.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	// 	fmt.Printf("%s %s\n", r.Method, r.URL.String())
-	// 	w.Write([]byte("Hello"))
-	// }))
 }
