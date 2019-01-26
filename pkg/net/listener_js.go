@@ -6,18 +6,35 @@ import (
 	"syscall/js"
 )
 
-var connections map[int32](chan int)
+type event struct {
+	readable  bool
+	writeable bool
+}
+
+// type eventState struct {
+// 	block
+// }
+
+var connections map[int32](chan event)
 
 func init() {
-	connections = make(map[int32](chan int))
+	connections = make(map[int32](chan event))
 	callback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		println("called callback")
 		for i, _ := range args {
-			if i%2 == 1 {
+			if i%3 != 0 {
 				continue
 			}
+			print("foo")
 			token := args[i].Int()
-			new_token := args[i+1].Int()
-			connections[int32(token)] <- new_token
+			println(token + 10000)
+			readable := args[i+1].Int() == 1
+			writeable := args[i+2].Int() == 1
+			select {
+			case connections[int32(token)] <- event{readable, writeable}:
+			default:
+				println("no callback message sent")
+			}
 		}
 		return nil
 	})
@@ -37,11 +54,12 @@ type Listener struct {
 	token int32
 }
 
-func acceptTcp(id int32)
+func acceptTcp(id int32) int32
 
 func (l *Listener) Accept() (Conn, error) {
-	acceptTcp(l.token)
-	token := <-connections[l.token]
+	event := <-connections[l.token]
+	_ = event
+	token := acceptTcp(l.token)
 	fmt.Println("accept token", token)
 	return Conn{token: int32(token)}, nil
 }
@@ -68,7 +86,7 @@ func listenTcp(addr string) int32
 
 func ListenTcp(addr string) Listener {
 	id := listenTcp(addr)
-	connections[id] = make(chan int)
+	connections[id] = make(chan event)
 	fmt.Printf("%#v\n", connections)
 	return Listener{token: id}
 }

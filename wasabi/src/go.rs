@@ -85,7 +85,7 @@ impl SharedState {
         self.js.add_object_value(pe, "id", (id, false));
         self.js.add_object(pe, "this");
         self.js.add_array(pe, "args", args);
-        self.js.add_object_value(7, "_pendingEvent", (pe, true))
+        self.call_queue.push_back(pe);
     }
 }
 
@@ -501,9 +501,15 @@ unsafe extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
 }
 
 unsafe extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
-    println!("go_accept_tcp");
     let fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
+    println!("go_accept_tcp {}", token);
+    let id = fc
+        .shared_state()
+        .net_loop
+        .tcp_accept(token as usize)
+        .unwrap();
+    fc.set_i32(sp + 16, id as i32);
 }
 
 unsafe extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -512,17 +518,11 @@ unsafe extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     let id = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
-    // let mut stream = fc
-    //     .shared_state()
-    //     .net_slab
-    //     .get_stream_ref(id as usize)
-    //     .unwrap();
-    // println!("{:?}", stream);
-    // stream
-    //     .write(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
-    //     .unwrap();
-
-    println!("{:?}", (id, addr, ln));
+    let written = fc.shared_state().net_loop.write_stream(
+        id as usize,
+        fc.mem_slice(addr as usize, (addr + ln) as usize),
+    );
+    fc.set_i32(sp + 40, written as i32);
 }
 
 unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -531,17 +531,11 @@ unsafe extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     let id = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
-    // let mut stream = fc
-    //     .shared_state()
-    //     .net_slab
-    //     .get_stream_ref(id as usize)
-    //     .unwrap();
-    // println!("{:?}", stream);
-    // stream
-    //     .read(fc.mut_mem_slice(addr as usize, (addr + ln) as usize))
-    //     .unwrap();
-
-    println!("{:?}", (id, addr, ln));
+    let read = fc.shared_state().net_loop.read_stream(
+        id as usize,
+        fc.mut_mem_slice(addr as usize, (addr + ln) as usize),
+    );
+    fc.set_i32(sp + 40, read as i32);
 }
 
 unsafe extern "C" fn go_lookup_ip(sp: i32, vmctx: *mut VMContext) {
@@ -794,12 +788,10 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
     }
 
     let (argc, argv) = load_args_from_definition(args, definition);
-    // resolver::start_event_loop();
     let mut function_name = "run";
     let mut args = vec![RuntimeValue::I32(argc), RuntimeValue::I32(argv)];
     let invoke_timer = SystemTime::now();
     loop {
-        println!("{:?} {:?}", function_name, args);
         match namespace
             .invoke(&mut *c, index, function_name, &args)
             .map_err(|e| e.to_string())?
@@ -820,8 +812,59 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("host state is not a SharedState");
 
+        // Stop execution if we've exited
+        if shared_state.exited == true {
+            break;
+        }
+
+        // Check for events if we have an active listener
+        if shared_state.net_loop.is_listening {
+            let mut events = Vec::new();
+
+            // If there's nothing to be called, wait for network events
+            if shared_state.call_queue.is_empty() {
+                // block if there's nothing else to do
+                events.push(shared_state.net_loop.event_receiver.recv().unwrap());
+            }
+            // Regardless of the state of the call stack, try and fetch some
+            // events
+            loop {
+                match shared_state.net_loop.event_receiver.try_recv() {
+                    Ok(event) => {
+                        events.push(event);
+                    }
+                    Err(_) => break,
+                }
+            }
+            let mut network_cb_args = Vec::new();
+            for event in &events {
+                network_cb_args.push((event.token().0 as i64, false));
+                network_cb_args.push((
+                    if event.readiness().is_readable() {
+                        1
+                    } else {
+                        0
+                    } as i64,
+                    false,
+                ));
+                network_cb_args.push((
+                    if event.readiness().is_writable() {
+                        1
+                    } else {
+                        0
+                    } as i64,
+                    false,
+                ));
+            }
+            if !network_cb_args.is_empty() {
+                // Add the network callback to the call stack
+                let ncbid = shared_state.net_callback_id;
+                shared_state.add_pending_event(ncbid, network_cb_args);
+            }
+        }
+
+        // Invoke an event by setting it as the this._pendingEvent
         if !shared_state.call_queue.is_empty() {
-            // all callbacks currently just set the pending event
             shared_state.js.add_object_value(
                 7,
                 "_pendingEvent",
@@ -829,14 +872,25 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             );
             continue;
         }
-        // TODO: poll with timeout if there is a callback that needs to run
+
+        // If we have a setTimeout style call, sleep
+        // TODO: actually make this play nice with other loop behavior
         if let Some(callback) = shared_state.callback_heap.pop() {
             let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
             thread::sleep(sleep_time);
             continue;
         }
 
+        // If we have things to call let the program continue for another loop
+        if !shared_state.call_queue.is_empty() {
+            continue;
+        }
+
+        // If we get this far we've run out of things to do, but the program
+        // hasn't exited normally. Set pending event to 0 to trigger a stack
+        // dump and exit
         if shared_state.exited == false {
+            shared_state.exited = true;
             shared_state.add_pending_event(0, Vec::new());
             continue;
         }

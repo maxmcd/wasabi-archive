@@ -20,10 +20,14 @@ func main() {
 		} else {
 			fmt.Println(ln, b)
 		}
-		if ln, err := c.Write([]byte("HTTP/1.1 200 OK")); err != nil {
+		if ln, err := c.Write([]byte(`HTTP/1.1 200 OK
+Content-Length: 6
+Content-Type: text/plain
+
+wasabi`)); err != nil {
 			panic(err)
 		} else {
-			fmt.Println(ln, b)
+			fmt.Println(ln)
 		}
 	}
 	// wnet.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

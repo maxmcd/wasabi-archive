@@ -18,7 +18,8 @@ enum NetTcp {
 pub struct NetLoop {
     slab: Slab<NetTcp>,
     poll: Arc<mio::Poll>,
-    event_receiver: mpsc::Receiver<mio::event::Event>,
+    pub is_listening: bool,
+    pub event_receiver: mpsc::Receiver<mio::event::Event>,
 }
 
 impl NetLoop {
@@ -31,12 +32,14 @@ impl NetLoop {
             loop {
                 t_poll.poll(&mut events, None).unwrap();
                 for event in events.iter() {
+                    println!("Got event in network.rs event loop {:?}", event);
                     event_sender.send(event).unwrap();
                 }
             }
         });
         Self {
             slab: Slab::new(),
+            is_listening: false,
             poll,
             event_receiver,
         }
@@ -51,6 +54,7 @@ impl NetLoop {
             mio::Ready::readable() | mio::Ready::writable(),
             mio::PollOpt::edge(),
         )?;
+        self.is_listening = true;
         Ok(id)
     }
     pub fn tcp_connect(&mut self, addr: &SocketAddr) -> io::Result<usize> {
@@ -71,10 +75,10 @@ impl NetLoop {
         let (stream, _) = self.get_listener_ref(id).unwrap().accept()?;
         self.register_stream(stream)
     }
-    fn read_stream(&self, i: usize, b: &mut [u8]) -> usize {
+    pub fn read_stream(&self, i: usize, b: &mut [u8]) -> usize {
         self.get_stream_ref(i).unwrap().read(b).unwrap()
     }
-    fn write_stream(&self, i: usize, b: &[u8]) -> usize {
+    pub fn write_stream(&self, i: usize, b: &[u8]) -> usize {
         self.get_stream_ref(i).unwrap().write(b).unwrap()
     }
     fn get_listener_ref(&self, i: usize) -> Option<&mio::net::TcpListener> {
