@@ -5,15 +5,16 @@ use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use js;
+use network;
 use network::NetLoop;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::error::Error;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
-use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{str, thread, time};
+use std::{io, slice, str, thread, time};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
@@ -299,7 +300,20 @@ trait ContextHelpers {
         }
         self.set_i32(addr, self.store_value_bytes(byte_references))
     }
-    fn set_error(&self, addr: i32, err: std::io::Error) {
+    fn set_usize_result(&self, addr: i32, result: io::Result<usize>) {
+        match result {
+            Ok(value) => {
+                self.set_i32(addr, value as i32);
+                self.set_bool(addr + 4, true);
+            }
+            Err(err) => {
+                self.set_error(addr, &err);
+                self.set_bool(addr + 4, false);
+            }
+        }
+    }
+
+    fn set_error(&self, addr: i32, err: &Error) {
         self.store_string(addr, err.to_string())
     }
     fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
@@ -492,27 +506,25 @@ extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
 }
 
 extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
-    println!("go_listen_tcp");
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
-    let id = fc
-        .shared_state()
-        .net_loop
-        .tcp_listen(&addr.parse().unwrap())
-        .unwrap();
-    fc.set_i32(sp + 24, id as i32);
+    match &addr.parse() {
+        Ok(addr) => {
+            let id = fc.shared_state().net_loop.tcp_listen(addr);
+            fc.set_usize_result(sp + 24, id);
+        }
+        Err(err) => {
+            fc.set_error(sp + 24, err);
+        }
+    }
 }
 
 extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
     println!("go_accept_tcp {}", token);
-    let id = fc
-        .shared_state()
-        .net_loop
-        .tcp_accept(token as usize)
-        .unwrap();
-    fc.set_i32(sp + 16, id as i32);
+    let id = fc.shared_state().net_loop.tcp_accept(token as usize);
+    fc.set_usize_result(sp + 16, id);
 }
 
 extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -525,7 +537,7 @@ extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
         id as usize,
         fc.mem_slice(addr as usize, (addr + ln) as usize),
     );
-    fc.set_i32(sp + 40, written as i32);
+    fc.set_usize_result(sp + 40, written);
 }
 
 extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -538,7 +550,7 @@ extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
         id as usize,
         fc.mut_mem_slice(addr as usize, (addr + ln) as usize),
     );
-    fc.set_i32(sp + 40, read as i32);
+    fc.set_usize_result(sp + 40, read);
 }
 
 extern "C" fn go_lookup_ip_addr(sp: i32, vmctx: *mut VMContext) {
@@ -559,7 +571,7 @@ extern "C" fn go_lookup_ip_addr(sp: i32, vmctx: *mut VMContext) {
         }
         Err(err) => {
             fc.set_bool(sp + 24 + 4, false);
-            fc.set_error(sp + 24, err)
+            fc.set_error(sp + 24, &err)
         }
     }
 }
@@ -762,12 +774,12 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             // If there's nothing to be called, wait for network events
             if shared_state.call_queue.is_empty() {
                 // block if there's nothing else to do
-                events.push(shared_state.net_loop.event_receiver.recv().unwrap());
+                events.push(shared_state.net_loop.recv().unwrap());
             }
             // Regardless of the state of the call stack, try and fetch some
             // events
             loop {
-                match shared_state.net_loop.event_receiver.try_recv() {
+                match shared_state.net_loop.try_recv() {
                     Ok(event) => {
                         events.push(event);
                     }
@@ -776,23 +788,9 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             }
             let mut network_cb_args = Vec::new();
             for event in &events {
-                network_cb_args.push((event.token().0 as i64, false));
-                network_cb_args.push((
-                    if event.readiness().is_readable() {
-                        1
-                    } else {
-                        0
-                    } as i64,
-                    false,
-                ));
-                network_cb_args.push((
-                    if event.readiness().is_writable() {
-                        1
-                    } else {
-                        0
-                    } as i64,
-                    false,
-                ));
+                let ints = network::event_to_ints(event);
+                network_cb_args.push((ints.0, false));
+                network_cb_args.push((ints.1, false));
             }
             if !network_cb_args.is_empty() {
                 // Add the network callback to the call stack
