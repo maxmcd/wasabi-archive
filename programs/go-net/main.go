@@ -2,12 +2,26 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 
 	wnet "github.com/maxmcd/wasabi/pkg/net"
 )
 
 func main() {
-	tcpHTTPServer()
+	httpRequest()
+	// tcpHTTPServer()
+
+}
+
+func httpRequest() {
+	client := http.Client{Transport: &wnet.RoundTripper{}}
+
+	req, err := http.NewRequest("GET", "http://www.google.com/", nil)
+	if err != nil {
+		panic(err)
+	}
+	resp, err := client.Do(req)
+	fmt.Println("Request response:", resp, err)
 }
 
 func lookupIPAddr() {

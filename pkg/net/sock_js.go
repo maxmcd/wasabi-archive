@@ -2,10 +2,12 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"syscall/js"
+	"time"
 
 	"github.com/maxmcd/wasabi/pkg/wasm"
 )
@@ -88,6 +90,34 @@ func (c *Conn) Read(b []byte) (int, error) {
 	return 0, err
 }
 
+func (c *Conn) Close() error {
+	return nil
+}
+
+func (c *Conn) LocalAddr() net.Addr {
+	return &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 8668,
+		Zone: "",
+	}
+}
+func (c *Conn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 8668,
+		Zone: "",
+	}
+}
+func (c *Conn) SetDeadline(t time.Time) error {
+	return nil
+}
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
 func writeConn(id int32, b []byte) (int32, bool)
 
 func (c *Conn) Write(b []byte) (int, error) {
@@ -115,28 +145,8 @@ func ListenTcp(addr string) (Listener, error) {
 
 }
 
-func lookupIPAddr(host string) (int32, bool)
-
-// LookupIPAddr looks up host using the local resolver. It returns a slice of
-// that host's IPv4 addresses.
-func LookupIPAddr(host string) (addrs []net.IPAddr, err error) {
-	ref, ok := lookupIPAddr(host)
-	if !ok {
-		bytes, _ := wasm.GetBytes(ref)
-		err = errors.New(string(bytes))
-		return
-	}
-	refs, err := wasm.GetArrayOfRefs(ref)
-	if err != nil {
-		return
-	}
-	addrs = make([]net.IPAddr, len(refs))
-	for i, ref := range refs {
-		val, err := wasm.GetBytes(ref)
-		if err != nil {
-			return nil, err
-		}
-		addrs[i] = net.IPAddr{IP: val}
-	}
-	return
+func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	var c net.Conn
+	c = &Conn{token: -1}
+	return c, nil
 }

@@ -172,12 +172,12 @@ mod tests {
         loop {
             let event = nl.event_receiver.recv().unwrap();
             if event.token().0 == conn && event.readiness().is_writable() {
-                nl.write_stream(event.token().0, &to_write);
+                nl.write_stream(event.token().0, &to_write).unwrap();
             } else if event.token().0 == listener && event.readiness().is_readable() {
                 nl.tcp_accept(event.token().0).unwrap();
             } else if event.token().0 == 2 && event.readiness().is_readable() {
                 let mut b = [0; 9];
-                nl.read_stream(event.token().0, &mut b);
+                nl.read_stream(event.token().0, &mut b).unwrap();
                 assert_eq!(b, to_write);
                 break;
             // listener connection

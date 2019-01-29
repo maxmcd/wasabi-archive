@@ -264,6 +264,14 @@ trait ContextHelpers {
     }
     fn get_static_string(&self, sp: i32) -> &'static str {
         let key = str::from_utf8(self.get_bytes(sp)).unwrap();
+        if key == "AbortController" {
+            panic!([
+                "\"AbortController\" requested. This likely means ",
+                "the default js/wasm rountripper is being used. Wasabi",
+                " doesn't support this, use the wasabi networking libary."
+            ]
+            .join(""))
+        }
         match self.shared_state().js.static_strings.get(&key) {
             Some(v) => v,
             None => {
@@ -911,13 +919,13 @@ mod tests {
         assert_eq!(argv, 4184);
     }
 
-    // #[test]
-    // fn i32_get_and_set() {
-    //     let tc = test_context();
-    //     tc.set_i32(0, 2147483647);
-    //     assert_eq!(2147483647, tc.get_i32(0));
-    //     tc.set_i32(0, -2147483647);
-    //     assert_eq!(-2147483647, tc.get_i32(0));
-    // }
+    #[test]
+    fn i32_get_and_set() {
+        let tc = test_context();
+        tc.set_i32(0, 2147483647);
+        assert_eq!(2147483647, tc.get_i32(0));
+        tc.set_i32(0, -2147483647);
+        assert_eq!(-2147483647, tc.get_i32(0));
+    }
 
 }

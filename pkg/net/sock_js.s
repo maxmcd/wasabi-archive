@@ -15,7 +15,3 @@ TEXT ·readConn(SB), NOSPLIT, $0
 TEXT ·writeConn(SB), NOSPLIT, $0
     CallImport
     RET
-
-TEXT ·lookupIPAddr(SB), NOSPLIT, $0
-    CallImport
-    RET

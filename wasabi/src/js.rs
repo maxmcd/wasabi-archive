@@ -8,7 +8,6 @@ pub enum Value {
     Array(Vec<(i64, bool)>),
     False,
     Int(i32),
-    Int64(i64),
     Memory {
         address: i64,
         len: i64,
@@ -25,7 +24,6 @@ pub enum Value {
     String(String),
     Bytes(Vec<u8>),
     True,
-    Undefined,
 }
 
 #[derive(Debug)]
@@ -85,7 +83,7 @@ impl Js {
             name: name,
             values: HashMap::new(),
         }) as i64;
-        if let Some(o) = self.slab.get_mut(r as usize) {
+        if let Some(o) = self.slab_get_mut(r) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, (new_r, true));
@@ -102,7 +100,7 @@ impl Js {
     pub fn add_array(&mut self, r: i64, name: &'static str, args: Vec<(i64, bool)>) -> i64 {
         self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Array(args)) as i64;
-        if let Some(o) = self.slab.get_mut(r as usize) {
+        if let Some(o) = self.slab_get_mut(r) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, (new_r, true));
@@ -118,7 +116,7 @@ impl Js {
     }
     pub fn add_object_value(&mut self, r: i64, name: &'static str, value: (i64, bool)) {
         self.static_strings.insert(name, name);
-        if let Some(o) = self.slab.get_mut(r as usize) {
+        if let Some(o) = self.slab_get_mut(r) {
             match o {
                 Value::Object { values, .. } => {
                     values.insert(name, value);
