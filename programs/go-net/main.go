@@ -8,9 +8,14 @@ import (
 )
 
 func main() {
-	httpRequest()
+	tcpDial()
+	// httpRequest()
 	// tcpHTTPServer()
 
+}
+
+func tcpDial() {
+	fmt.Println(wnet.Dial("tcp", "127.0.0.1:80"))
 }
 
 func httpRequest() {

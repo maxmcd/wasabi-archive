@@ -102,6 +102,7 @@ impl NetLoop {
             self.get_listener_ref(id)?,
             mio::Token(id),
             mio::Ready::readable() | mio::Ready::writable(),
+            // https://carllerche.github.io/mio/mio/struct.Poll.html#edge-triggered-and-level-triggered
             mio::PollOpt::edge(),
         )?;
         self.is_listening = true;
@@ -109,6 +110,7 @@ impl NetLoop {
     }
     pub fn tcp_connect(&mut self, addr: &SocketAddr) -> Result<usize> {
         let stream = net::TcpStream::connect(addr)?;
+        self.is_listening = true;
         self.register_stream(stream)
     }
     fn register_stream(&mut self, stream: mio::net::TcpStream) -> Result<usize> {

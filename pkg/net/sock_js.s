@@ -15,3 +15,7 @@ TEXT ·readConn(SB), NOSPLIT, $0
 TEXT ·writeConn(SB), NOSPLIT, $0
     CallImport
     RET
+
+TEXT ·dialTcp(SB), NOSPLIT, $0
+    CallImport
+    RET

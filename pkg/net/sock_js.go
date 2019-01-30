@@ -2,7 +2,6 @@
 package net
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -145,8 +144,30 @@ func ListenTcp(addr string) (Listener, error) {
 
 }
 
-func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	var c net.Conn
-	c = &Conn{token: -1}
-	return c, nil
+// func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+// 	var c net.Conn
+// 	c = &Conn{token: -1}
+// 	return c, nil
+// }
+
+func dialTcp(addr string) (int32, bool)
+
+func Dial(network, addr string) (net.Conn, error) {
+	if network != "tcp" {
+		return nil, errors.New("tcp is the only protocal supported")
+	}
+	ref, ok := dialTcp(addr)
+	if ok {
+		println("ok")
+		connections[ref] = make(chan event)
+		var c net.Conn
+		event := <-connections[ref]
+		_ = event
+		c = &Conn{token: ref}
+		return c, nil
+	}
+
+	bytes, _ := wasm.GetBytes(ref)
+	err := errors.New(string(bytes))
+	return nil, err
 }

@@ -267,7 +267,7 @@ trait ContextHelpers {
         if key == "AbortController" {
             panic!([
                 "\"AbortController\" requested. This likely means ",
-                "the default js/wasm rountripper is being used. Wasabi",
+                "the default js/wasm roundtripper is being used. Wasabi",
                 " doesn't support this, use the wasabi networking libary."
             ]
             .join(""))
@@ -483,7 +483,6 @@ extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
 
 extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
-    // let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
     let addr = fc.get_i32(sp + 8);
     let ln = fc.get_i32(sp + 16);
     thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
@@ -533,6 +532,21 @@ extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     println!("go_accept_tcp {}", token);
     let id = fc.shared_state().net_loop.tcp_accept(token as usize);
     fc.set_usize_result(sp + 16, id);
+}
+
+extern "C" fn go_dial_tcp(sp: i32, vmctx: *mut VMContext) {
+    let fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8);
+    println!("go_dial_tcp {}", addr);
+    match &addr.parse() {
+        Ok(addr) => {
+            let id = fc.shared_state().net_loop.tcp_connect(addr);
+            fc.set_usize_result(sp + 24, id);
+        }
+        Err(err) => {
+            fc.set_error(sp + 24, err);
+        }
+    }
 }
 
 extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
@@ -601,10 +615,11 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
         ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
@@ -796,6 +811,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             }
             let mut network_cb_args = Vec::new();
             for event in &events {
+                println!("event {:?}", event);
                 let ints = network::event_to_ints(event);
                 network_cb_args.push((ints.0, false));
                 network_cb_args.push((ints.1, false));
@@ -836,6 +852,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         // dump and exit
         if shared_state.exited == false {
             shared_state.exited = true;
+            // TODO: fix this it doesn't run as expected
             shared_state.add_pending_event(0, Vec::new());
             continue;
         }
