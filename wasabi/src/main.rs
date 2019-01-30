@@ -1,7 +1,13 @@
 //! Runtime is a wasm go runtime
 
-#![deny(missing_docs, trivial_numeric_casts, unstable_features)]
-#![warn(unused_import_braces)]
+#![deny(
+    missing_docs,
+    trivial_numeric_casts,
+    unstable_features,
+    unused_extern_crates,
+    unused_features
+)]
+#![warn(unused_import_braces, unused_parens)]
 #![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
 #![cfg_attr(
     feature = "cargo-clippy",
@@ -24,13 +30,9 @@ extern crate cranelift_codegen;
 extern crate cranelift_entity;
 extern crate cranelift_native;
 extern crate cranelift_wasm;
-extern crate docopt;
 extern crate file_per_thread_logger;
 extern crate mio;
-extern crate pretty_env_logger;
 extern crate rand;
-extern crate reqwest;
-extern crate serde_derive;
 extern crate slab;
 extern crate target_lexicon;
 extern crate wabt;

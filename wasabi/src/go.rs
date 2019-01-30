@@ -30,18 +30,18 @@ struct Callback {
 }
 
 impl Ord for Callback {
-    fn cmp(&self, other: &Callback) -> Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.time.cmp(&other.time)
     }
 }
 impl PartialOrd for Callback {
-    fn partial_cmp(&self, other: &Callback) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl PartialEq for Callback {
-    fn eq(&self, other: &Callback) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.time == other.time && self.id == other.id
     }
 }
@@ -95,7 +95,7 @@ struct FuncContext {
 }
 impl FuncContext {
     fn new(vmctx: *mut VMContext) -> Self {
-        Self { vmctx: vmctx }
+        Self { vmctx }
     }
 }
 
@@ -353,7 +353,7 @@ trait ContextHelpers {
 fn epoch_ns() -> i64 {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    since_the_epoch.as_secs() as i64 * 1_000_000_000 + since_the_epoch.subsec_nanos() as i64
+    since_the_epoch.as_secs() as i64 * 1_000_000_000 + i64::from(since_the_epoch.subsec_nanos())
 }
 
 extern "C" fn go_debug(_sp: i32) {
@@ -368,7 +368,7 @@ extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
     fc.shared_state().next_callback_timeout_id += 1;
     fc.shared_state().callback_heap.push(Callback {
         time: epoch_ns() + count * 1_000_000,
-        id: id,
+        id,
     });
     fc.shared_state().callback_map.insert(id, true);
 }
@@ -494,7 +494,7 @@ extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
 
-    let b = match fc.shared_state().js.slab_get(reference as i64).unwrap() {
+    let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
         js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
@@ -505,7 +505,7 @@ extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
 
-    let b = match fc.shared_state().js.slab_get(reference as i64).unwrap() {
+    let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
         js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
@@ -611,7 +611,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let call_conv = isa::CallConv::triple_default(&HOST);
     let pointer_type = types::Type::triple_pointer_type(&HOST);
 
-    #[cfg_attr(rustfmt, rustfmt_skip)]
+    #[rustfmt::skip]
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
@@ -691,7 +691,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     )
 }
 
-fn strptr(s: &String, offset: usize, mem: &mut [u8]) -> (usize, usize) {
+fn strptr(s: &str, offset: usize, mem: &mut [u8]) -> (usize, usize) {
     let ptr = offset;
     mem[offset..offset + s.len()].copy_from_slice(s.as_bytes());
     mem[offset + s.len()] = 0u8;
@@ -786,7 +786,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .expect("host state is not a SharedState");
 
         // Stop execution if we've exited
-        if shared_state.exited == true {
+        if shared_state.exited {
             break;
         }
 
@@ -801,13 +801,8 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             }
             // Regardless of the state of the call stack, try and fetch some
             // events
-            loop {
-                match shared_state.net_loop.try_recv() {
-                    Ok(event) => {
-                        events.push(event);
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(event) = shared_state.net_loop.try_recv() {
+                events.push(event)
             }
             let mut network_cb_args = Vec::new();
             for event in &events {
@@ -850,7 +845,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         // If we get this far we've run out of things to do, but the program
         // hasn't exited normally. Set pending event to 0 to trigger a stack
         // dump and exit
-        if shared_state.exited == false {
+        if !shared_state.exited {
             shared_state.exited = true;
             // TODO: fix this it doesn't run as expected
             shared_state.add_pending_event(0, Vec::new());
@@ -884,7 +879,7 @@ mod tests {
 
     impl TestContext {
         fn new(vmctx: *mut TestVMContext, v: TestVMContext) -> Self {
-            Self { vmctx: vmctx, v: v }
+            Self { vmctx, v }
         }
     }
     impl ContextHelpers for TestContext {

@@ -39,11 +39,11 @@ pub fn load_value(b: &[u8]) -> (i64, bool) {
         //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
         (intfloat, false)
     } else {
-        (bytes::as_i32_le(b) as i64, true)
+        (i64::from(bytes::as_i32_le(b)), true)
     }
 }
 pub fn store_value(r: (i64, bool)) -> [u8; 8] {
-    let nan_head = 0x7FF80000;
+    let nan_head = 0x7FF8_0000;
     let mut out = [0; 8];
     if r.1 {
         out[0..4].copy_from_slice(&bytes::i32_as_u8_le(r.0 as i32));
@@ -80,7 +80,7 @@ impl Js {
     pub fn add_object(&mut self, r: i64, name: &'static str) -> i64 {
         self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Object {
-            name: name,
+            name,
             values: HashMap::new(),
         }) as i64;
         if let Some(o) = self.slab_get_mut(r) {
@@ -174,10 +174,10 @@ impl Js {
         // TODO: don't pass around arbitrary ints as references within a function
         let name = match self.slab_get(target) {
             Some(o) => match o {
-                Value::Object { name, .. } => match name {
-                    &"Uint8Array" => Some(0),
-                    &"Date" => Some(1),
-                    &"net_listener" => Some(2),
+                Value::Object { name, .. } => match *name {
+                    "Uint8Array" => Some(0),
+                    "Date" => Some(1),
+                    "net_listener" => Some(2),
                     _ => None,
                 },
                 _ => None,
@@ -209,11 +209,8 @@ impl Js {
     }
     pub fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
         if let Some(o) = self.slab.get_mut(target as usize) {
-            match o {
-                Value::Object { values, .. } => {
-                    values.insert(property_key, (value, true));
-                }
-                _ => {}
+            if let Value::Object { values, .. } = o {
+                values.insert(property_key, (value, true));
             }
         }
     }
