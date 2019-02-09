@@ -4,10 +4,10 @@ version = "0.1.0"
 authors = ["maxmcd <m@xmcd.me>"]
 
 [dependencies]
-cranelift-codegen = "0.26.0"
-cranelift-entity = "0.26.0"
-cranelift-native = "0.26.0"
-cranelift-wasm = "0.26.0"
+cranelift-codegen = "0.28.0"
+cranelift-entity = "0.28.0"
+cranelift-native = "0.28.0"
+cranelift-wasm = "0.28.0"
 file-per-thread-logger = "0.1.1"
 mio = "0.6"
 slab = "0.4.2"

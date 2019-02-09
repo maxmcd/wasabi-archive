@@ -10,7 +10,7 @@ import (
 func main() {
 	tcpDial()
 	// httpRequest()
-	// tcpHTTPServer()
+	tcpHTTPServer()
 
 }
 

@@ -5,45 +5,96 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"syscall/js"
 	"time"
 
 	"github.com/maxmcd/wasabi/pkg/wasm"
 )
 
-type event struct {
-	readable  bool
-	writeable bool
+type eventState struct {
+	state int
+	cond  *sync.Cond
 }
 
-// type eventState struct {
-// 	readable  bool
-// 	writeable bool
-// 	readChan  (chan bool)
-// 	writeChan (chan bool)
-// }
+func (e *eventState) readable() bool {
+	return ((e.state >> 0) & 1) == 1
+}
+func (e *eventState) writeable() bool {
+	return ((e.state >> 1) & 1) == 1
+}
+func (e *eventState) hup() bool {
+	return ((e.state >> 2) & 1) == 1
+}
+func (e *eventState) error() bool {
+	return ((e.state >> 3) & 1) == 1
+}
 
-var connections map[int32](chan event)
+func (e *eventState) dead() bool {
+	print("dddd")
+	print(1000 + e.state)
+	println("dddd")
+	return e.error() || e.hup()
+}
+
+func (e *eventState) writewait() error {
+	if e.writeable() {
+		return nil
+	}
+	e.cond.L.Lock()
+	for {
+		if e.dead() {
+			return errors.New("wasabi: Connection closed")
+		}
+		if e.writeable() {
+			e.state = e.state ^ (1 << 1)
+			break
+		}
+		e.cond.Wait()
+	}
+	e.cond.L.Unlock()
+	return nil
+}
+
+func (e *eventState) readwait() error {
+	e.cond.L.Lock()
+	for {
+		if e.dead() {
+			return errors.New("wasabi: Connection closed")
+		}
+		println("not dead")
+		if e.readable() {
+			e.state = e.state ^ (1 << 0)
+			break
+		}
+		println("not readable, waiting")
+		e.cond.Wait()
+	}
+	e.cond.L.Unlock()
+	return nil
+}
+
+func newEventState() *eventState {
+	return &eventState{
+		state: 0,
+		cond:  sync.NewCond(&sync.Mutex{}),
+	}
+}
+
+var connections map[int32]*eventState
 
 func init() {
-	connections = make(map[int32](chan event))
+	connections = make(map[int32]*eventState)
 	callback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		println("called callback")
 		for i, _ := range args {
 			if i%2 != 0 {
 				continue
 			}
-			print("foo")
 			token := args[i].Int()
-			println(token + 10000)
-			state := args[i+1].Int()
-			readable := ((state >> 0) & 1) == 1
-			writeable := ((state >> 1) & 1) == 1
-			select {
-			case connections[int32(token)] <- event{readable, writeable}:
-			default:
-				println("no callback message sent")
-			}
+			es := connections[int32(token)]
+			es.state = args[i+1].Int()
+			es.cond.Broadcast()
 		}
 		return nil
 	})
@@ -63,14 +114,28 @@ type Listener struct {
 	token int32
 }
 
-func acceptTcp(id int32) int32
+func acceptTcp(id int32) (int32, bool)
 
-func (l *Listener) Accept() (Conn, error) {
-	event := <-connections[l.token]
-	_ = event
-	token := acceptTcp(l.token)
-	fmt.Println("accept token", token)
-	return Conn{token: int32(token)}, nil
+func (l *Listener) Accept() (c Conn, err error) {
+	println("l.Accept")
+
+	for {
+		token, ok := acceptTcp(l.token)
+		if ok {
+			connections[token] = newEventState()
+			c.token = int32(token)
+			return c, nil
+		}
+		bytes, _ := wasm.GetBytes(token)
+		err = errors.New(string(bytes))
+		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+			return
+		}
+		if err = connections[l.token].readwait(); err != nil {
+			return c, err
+		}
+	}
+	return
 }
 
 type Conn struct {
@@ -79,14 +144,41 @@ type Conn struct {
 
 func readConn(id int32, b []byte) (int32, bool)
 
-func (c *Conn) Read(b []byte) (int, error) {
-	ln, ok := readConn(c.token, b)
-	if ok {
-		return int(ln), nil
+func (c *Conn) Read(b []byte) (ln int, err error) {
+	for {
+		length, ok := readConn(c.token, b)
+		if ok {
+			return int(length), nil
+		}
+		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
+		err = errors.New(string(bytes))
+		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+			return 0, err
+		}
+		if err := connections[c.token].readwait(); err != nil {
+			return 0, err
+		}
 	}
-	bytes, _ := wasm.GetBytes(ln) // ln is ref if there's an error
-	err := errors.New(string(bytes))
-	return 0, err
+	return
+}
+
+func writeConn(id int32, b []byte) (int32, bool)
+
+func (c *Conn) Write(b []byte) (ln int, err error) {
+	for {
+		length, ok := writeConn(c.token, b)
+		if ok {
+			return int(length), nil
+		}
+		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
+		err = errors.New(string(bytes))
+		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+			return 0, err
+		}
+		if err := connections[c.token].writewait(); err != nil {
+			return 0, err
+		}
+	}
 }
 
 func (c *Conn) Close() error {
@@ -94,6 +186,7 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) LocalAddr() net.Addr {
+	// TODO: fix
 	return &net.TCPAddr{
 		IP:   net.IPv4(127, 0, 0, 1),
 		Port: 8668,
@@ -101,6 +194,7 @@ func (c *Conn) LocalAddr() net.Addr {
 	}
 }
 func (c *Conn) RemoteAddr() net.Addr {
+	// TODO: fix
 	return &net.TCPAddr{
 		IP:   net.IPv4(127, 0, 0, 1),
 		Port: 8668,
@@ -117,29 +211,18 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func writeConn(id int32, b []byte) (int32, bool)
-
-func (c *Conn) Write(b []byte) (int, error) {
-	ln, ok := writeConn(c.token, b)
-	if ok {
-		return int(ln), nil
-	}
-	bytes, _ := wasm.GetBytes(ln) // ln is ref if there's an error
-	err := errors.New(string(bytes))
-	return 0, err
-}
-
 func listenTcp(addr string) (int32, bool)
 
 func ListenTcp(addr string) (Listener, error) {
 	id, ok := listenTcp(addr)
 	if ok {
-		connections[id] = make(chan event)
+		connections[id] = newEventState()
 		fmt.Printf("%#v\n", connections)
 		return Listener{token: id}, nil
 	}
 	bytes, _ := wasm.GetBytes(id) // id is ref if there's an error
 	err := errors.New(string(bytes))
+	// TODO: don't just pass a negative number
 	return Listener{token: -1}, err
 
 }
@@ -152,22 +235,22 @@ func ListenTcp(addr string) (Listener, error) {
 
 func dialTcp(addr string) (int32, bool)
 
-func Dial(network, addr string) (net.Conn, error) {
+func Dial(network, addr string) (c net.Conn, err error) {
 	if network != "tcp" {
-		return nil, errors.New("tcp is the only protocal supported")
+		return c, errors.New("tcp is the only protocal supported")
 	}
 	ref, ok := dialTcp(addr)
 	if ok {
 		println("ok")
-		connections[ref] = make(chan event)
+		connections[ref] = newEventState()
+		if err := connections[ref].writewait(); err != nil {
+			return c, err
+		}
 		var c net.Conn
-		event := <-connections[ref]
-		_ = event
 		c = &Conn{token: ref}
 		return c, nil
 	}
 
 	bytes, _ := wasm.GetBytes(ref)
-	err := errors.New(string(bytes))
-	return nil, err
+	return c, errors.New(string(bytes))
 }

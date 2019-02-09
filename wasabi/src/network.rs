@@ -26,15 +26,13 @@ pub fn event_to_ints(event: &mio::Event) -> ((i64, i64)) {
     // 0 << 0 | 1 << 1 | 0 << 2 | 1 << 3
 
     let unix_ready = mio::unix::UnixReady::from(event.readiness());
-    let state: i64 = if unix_ready.is_readable() {
-        1 << 0
-    } else {
-        0 << 0
-    } | if unix_ready.is_writable() {
-        1 << 1
-    } else {
-        0 << 1
-    } | if unix_ready.is_hup() { 1 << 2 } else { 1 << 2 }
+    let state: i64 = if unix_ready.is_readable() { 1 } else { 0 }
+        | if unix_ready.is_writable() {
+            1 << 1
+        } else {
+            0 << 1
+        }
+        | if unix_ready.is_hup() { 1 << 2 } else { 0 << 2 }
         | if unix_ready.is_error() {
             1 << 3
         } else {

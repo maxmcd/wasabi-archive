@@ -33,8 +33,11 @@ pub struct Js {
 }
 
 pub fn load_value(b: &[u8]) -> (i64, bool) {
+    #![allow(clippy::float_cmp)]
+
     let float = f64::from_bits(bytes::as_i64_le(b) as u64);
     let intfloat = float as i64;
+
     if float == (intfloat) as f64 {
         //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
         (intfloat, false)

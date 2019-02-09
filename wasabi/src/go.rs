@@ -8,6 +8,7 @@ use js;
 use network;
 use network::NetLoop;
 use rand::{thread_rng, Rng};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::error::Error;
@@ -360,7 +361,7 @@ extern "C" fn go_debug(_sp: i32) {
     println!("debug")
 }
 
-extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let count = fc.get_i64(sp + 8);
     let id = fc.shared_state().next_callback_timeout_id;
@@ -372,7 +373,7 @@ extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
     });
     fc.shared_state().callback_map.insert(id, true);
 }
-extern "C" fn go_clear_timeout_event(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     fc.shared_state().callback_map.remove(&id);
@@ -381,7 +382,7 @@ extern "C" fn go_syscall(_sp: i32) {
     println!("go_syscall")
 }
 
-extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_string_val(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     fc.store_value(
         sp + 24,
@@ -394,14 +395,14 @@ extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
     );
 }
 
-extern "C" fn go_js_value_get(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let result = fc
         .reflect_get(fc.load_value(sp + 8).0, &fc.get_static_string(sp + 16))
         .unwrap();
     fc.store_value(sp + 32, result);
 }
-extern "C" fn go_js_value_set(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     // TODO check that return of load_value is actually a ref
     fc.shared_state().js.reflect_set(
@@ -410,7 +411,7 @@ extern "C" fn go_js_value_set(sp: i32, vmctx: *mut VMContext) {
         fc.load_value(sp + 32).0,
     );
 }
-extern "C" fn go_js_value_index(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     fc.store_value(
         sp + 24,
@@ -424,7 +425,7 @@ extern "C" fn go_js_value_set_index(_sp: i32) {
 extern "C" fn go_js_value_invoke(_sp: i32) {
     println!("js_value_invoke")
 }
-extern "C" fn go_js_value_call(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
     let m = fc.reflect_get(v.0, &fc.get_static_string(sp + 16)).unwrap();
@@ -434,7 +435,7 @@ extern "C" fn go_js_value_call(sp: i32, vmctx: *mut VMContext) {
     fc.store_value(sp + 56, result);
     fc.set_bool(sp + 64, true);
 }
-extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8).0;
     let args = fc.load_slice_of_values(sp + 16);
@@ -442,7 +443,7 @@ extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
     fc.store_value(sp + 40, result);
     fc.set_bool(sp + 48, true);
 }
-extern "C" fn go_js_value_length(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
     fc.set_i64(sp + 16, fc.value_length(v.0).unwrap());
@@ -454,7 +455,7 @@ extern "C" fn go_js_value_load_string(_sp: i32) {
     println!("js_value_load_string")
 }
 
-extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmexit(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let exit_code = fc.get_i32(sp + 8);
     if exit_code != 0 {
@@ -463,12 +464,12 @@ extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
     fc.shared_state().exited = true;
 }
 
-extern "C" fn go_wasmwrite(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmwrite(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     print!("{}", fc.get_string(sp + 16));
 }
 
-extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_walltime(vmctx: *mut VMContext, sp: i32) {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
     let fc = FuncContext::new(vmctx);
@@ -476,19 +477,19 @@ extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 8 + 8, since_the_epoch.subsec_nanos() as i32);
 }
 
-extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_nanotime(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     fc.set_i64(sp + 8, epoch_ns());
 }
 
-extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_get_random_data(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_i32(sp + 8);
     let ln = fc.get_i32(sp + 16);
     thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
 }
 
-extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
@@ -501,7 +502,7 @@ extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
-extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
 
@@ -512,7 +513,7 @@ extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
     fc.set_i64(sp + 16, b.len() as i64);
 }
 
-extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
     match &addr.parse() {
@@ -526,7 +527,7 @@ extern "C" fn go_listen_tcp(sp: i32, vmctx: *mut VMContext) {
     }
 }
 
-extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
     println!("go_accept_tcp {}", token);
@@ -534,7 +535,7 @@ extern "C" fn go_accept_tcp(sp: i32, vmctx: *mut VMContext) {
     fc.set_usize_result(sp + 16, id);
 }
 
-extern "C" fn go_dial_tcp(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
     println!("go_dial_tcp {}", addr);
@@ -549,7 +550,7 @@ extern "C" fn go_dial_tcp(sp: i32, vmctx: *mut VMContext) {
     }
 }
 
-extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     println!("go_write_tcp_conn");
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -562,7 +563,7 @@ extern "C" fn go_write_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     fc.set_usize_result(sp + 40, written);
 }
 
-extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     println!("go_read_tcp_conn");
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -575,7 +576,7 @@ extern "C" fn go_read_tcp_conn(sp: i32, vmctx: *mut VMContext) {
     fc.set_usize_result(sp + 40, read);
 }
 
-extern "C" fn go_lookup_ip_addr(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
     // TODO handle error
@@ -683,6 +684,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
 
     Instance::new(
         Rc::new(module),
+        Rc::new(RefCell::new(HashMap::new())),
         finished_functions.into_boxed_slice(),
         imports,
         &data_initializers,
@@ -731,10 +733,12 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
     let mut c = Box::new(compiler);
     let mut namespace = Namespace::new();
     let instance = instantiate_go().expect("Instantiate go");
-    let go_index = namespace.instance(Some("go"), instance);
+    let go_index = namespace.instance(Some("go".to_string()), instance);
 
     let instantiate_timer = SystemTime::now();
-    let mut instance = instantiate(&mut *c, &data, &mut namespace).map_err(|e| e.to_string())?;
+    let global_exports = Rc::new(RefCell::new(HashMap::new()));
+    let mut instance =
+        instantiate(&mut *c, &data, &mut namespace, global_exports).map_err(|e| e.to_string())?;
     println!(
         "Instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
@@ -750,7 +754,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         None => panic!("no memory export found"),
     };
 
-    let index = namespace.instance(Some("main"), instance);
+    let index = namespace.instance(Some("main".to_string()), instance);
     {
         let instance = &mut namespace.instances[go_index];
         let host_state = instance
