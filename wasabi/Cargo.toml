@@ -4,28 +4,17 @@ version = "0.1.0"
 authors = ["maxmcd <m@xmcd.me>"]
 
 [dependencies]
-cranelift-codegen = "0.26.0"
-cranelift-entity = "0.26.0"
-cranelift-native = "0.26.0"
-cranelift-wasm = "0.26.0"
-docopt = "1.0.1"
-faerie = "0.6.0"
+cranelift-codegen = "0.28.0"
+cranelift-entity = "0.28.0"
+cranelift-native = "0.28.0"
+cranelift-wasm = "0.28.0"
 file-per-thread-logger = "0.1.1"
-futures = "0.1.25"
-lazy_static = "1.2.0"
-pretty_env_logger = "0.3.0"
+mio = "0.6"
+slab = "0.4.2"
 rand = "0.6.1"
-reqwest = "0.9.5"
-serde = "1.0.75"
-serde_derive = "1.0.75"
 target-lexicon = { version = "0.2.0", default-features = false }
 wabt = "0.7"
-# wasmtime-environ = { git = "https://github.com/CraneStation/wasmtime" }
-# wasmtime-jit = { git = "https://github.com/CraneStation/wasmtime" }
-# wasmtime-obj = { git = "https://github.com/CraneStation/wasmtime" }
-# wasmtime-runtime = { git = "https://github.com/CraneStation/wasmtime" }
-# wasmtime-wast = { git = "https://github.com/CraneStation/wasmtime" }
-wasmtime-environ = { path = "../../../CraneStation/wasmtime/lib/environ" }
-wasmtime-jit = { path = "../../../CraneStation/wasmtime/lib/jit" }
-wasmtime-obj = { path = "../../../CraneStation/wasmtime/lib/obj" }
-wasmtime-runtime = { path = "../../../CraneStation/wasmtime/lib/runtime" }
+wasmtime-environ = { git = "https://github.com/maxmcd/wasmtime" }
+wasmtime-jit = { git = "https://github.com/maxmcd/wasmtime" }
+wasmtime-obj = { git = "https://github.com/maxmcd/wasmtime" }
+wasmtime-runtime = { git = "https://github.com/maxmcd/wasmtime" }

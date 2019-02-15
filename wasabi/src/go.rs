@@ -1,18 +1,21 @@
+use bytes::{as_i32_le, as_i64_le, i32_as_u8_le, i64_as_u8_le, u32_as_u8_le};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
+use js;
+use network;
+use network::NetLoop;
 use rand::{thread_rng, Rng};
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::error::Error;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
-use std::slice;
-use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{str, thread, time};
+use std::{io, slice, str, thread, time};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
@@ -21,35 +24,6 @@ use wasmtime_jit::{
 };
 use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
 
-#[derive(Debug)]
-enum JsValue {
-    // Likely can avoid Vec and String entirely
-    // just reference the memory
-    Bytes(Vec<u8>),
-    String(String),
-    Memory { address: i32, len: i32 },
-    FuncWrapper { id: i32 },
-    Int(i32),
-    Int64(i64),
-    Undefined,
-    PendingEvent,
-    True,
-    False,
-    Array(Vec<JsValue>),
-    NaN,
-    Null,
-    Global,
-    Mem,
-    This,
-}
-
-#[derive(Debug)]
-struct PendingEvent {
-    id: i32,
-    len: i32,
-    null: bool,
-}
-
 #[derive(Debug, Eq)]
 struct Callback {
     time: i64,
@@ -57,18 +31,18 @@ struct Callback {
 }
 
 impl Ord for Callback {
-    fn cmp(&self, other: &Callback) -> Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.time.cmp(&other.time)
     }
 }
 impl PartialOrd for Callback {
-    fn partial_cmp(&self, other: &Callback) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl PartialEq for Callback {
-    fn eq(&self, other: &Callback) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.time == other.time && self.id == other.id
     }
 }
@@ -76,41 +50,44 @@ impl PartialEq for Callback {
 #[derive(Debug)]
 struct SharedState {
     definition: Option<*mut VMMemoryDefinition>,
-    result_sender: Option<mpsc::Sender<String>>,
-    values: Vec<JsValue>,
-    envvars: HashMap<String, String>,
-    pending_event: PendingEvent,
+    pending_event_ref: i32,
     exited: bool,
+    poll: mio::Poll,
+    net_loop: NetLoop,
+    net_callback_id: i64,
     next_callback_timeout_id: i32,
     callback_heap: BinaryHeap<Callback>,
     callback_map: HashMap<i32, bool>,
+    call_queue: VecDeque<i64>,
+    js: js::Js,
 }
+
 impl SharedState {
     fn new() -> Self {
         Self {
             callback_heap: BinaryHeap::new(),
             callback_map: HashMap::new(),
             definition: None,
-            envvars: HashMap::new(),
             exited: false,
+            poll: mio::Poll::new().unwrap(),
+            net_loop: NetLoop::new(),
+            net_callback_id: 0,
             next_callback_timeout_id: 1,
-            pending_event: PendingEvent {
-                null: true,
-                id: 0,
-                len: 0,
-            },
-            result_sender: None,
-            values: vec![
-                JsValue::NaN,    // NaN,
-                JsValue::Int(0), // 0,
-                JsValue::Null,   // null,
-                JsValue::True,   // true,
-                JsValue::False,  // false,
-                JsValue::Global, // global,
-                JsValue::Mem,    // this._inst.exports.mem,
-                JsValue::This,   // this,
-            ],
+            pending_event_ref: 0,
+            js: js::Js::new(),
+            call_queue: VecDeque::new(),
         }
+    }
+    fn add_pending_event(&mut self, id: i64, args: Vec<(i64, bool)>) {
+        println!("Add pending event {:?}", (id, &args));
+        let pe = self.js.slab_add(js::Value::Object {
+            name: "pending_event",
+            values: HashMap::new(),
+        });
+        self.js.add_object_value(pe, "id", (id, false));
+        self.js.add_object(pe, "this");
+        self.js.add_array(pe, "args", args);
+        self.call_queue.push_back(pe);
     }
 }
 
@@ -119,7 +96,7 @@ struct FuncContext {
 }
 impl FuncContext {
     fn new(vmctx: *mut VMContext) -> Self {
-        Self { vmctx: vmctx }
+        Self { vmctx }
     }
 }
 
@@ -153,194 +130,112 @@ trait ContextHelpers {
     }
     fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8];
     fn mem_slice(&self, start: usize, end: usize) -> &[u8];
-    fn result_sender(&self) -> &mpsc::Sender<String> {
+    fn js(&self) -> &mut js::Js {
+        &mut self.shared_state().js
+    }
+    fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
         self.shared_state()
-            .result_sender
-            .as_ref()
-            .expect("I should have a sender")
+            .js
+            .reflect_set(target, property_key, value)
     }
-    fn values(&self) -> &mut Vec<JsValue> {
-        &mut self.shared_state().values
+    fn reflect_get(&self, target: i64, property_key: &'static str) -> Option<(i64, bool)> {
+        self.shared_state().js.reflect_get(target, property_key)
     }
-    fn envvars(&self) -> &mut HashMap<String, String> {
-        &mut self.shared_state().envvars
+    fn reflect_get_index(&self, target: i64, property_key: i64) -> Option<(i64, bool)> {
+        self.shared_state()
+            .js
+            .reflect_get_index(target, property_key)
     }
-    fn reflect_get(&self, target: &JsValue, property_key: &JsValue) -> JsValue {
-        match (target, property_key) {
-            (JsValue::Global, JsValue::String(s)) => JsValue::String(s.to_string()),
-            (JsValue::String(t), JsValue::String(pk)) => match (t.as_ref(), pk.as_ref()) {
-                ("fs", "constants") => JsValue::String("fs.constants".to_string()),
-                ("fs", "write") => JsValue::String("fs.write".to_string()),
-                ("Date", "getTimezoneOffset") => {
-                    JsValue::String("Date.getTimezoneOffset".to_string())
-                }
-                ("crypto", "getRandomValues") => {
-                    JsValue::String("crypto.getRandomValues".to_string())
-                } // Always UTC
-                ("fs.constants", _) => {
-                    JsValue::Int(-1)
-                    // wasm_exec.js:42
-                    // constants: {
-                    //     O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1,
-                    //     O_TRUNC: -1, O_APPEND: -1, O_EXCL: -1 },
-                    // unused
-                }
-                _ => {
-                    panic!("Not implemented {:?} {:?}", target, property_key);
-                }
-            },
-            (JsValue::PendingEvent, JsValue::String(a)) => match a.as_ref() {
-                "id" => JsValue::Int(self.shared_state().pending_event.id),
-                "this" => JsValue::This,
-                "args" => JsValue::Array(vec![
-                    JsValue::Null,
-                    JsValue::Int(self.shared_state().pending_event.len),
-                ]),
-                _ => {
-                    panic!("Not implemented {:?} {:?}", target, property_key);
-                }
-            },
-            (JsValue::Mem, JsValue::String(_pk)) => {
-                // mem.buffer
-                JsValue::String("mem.buffer".to_string())
-            }
-            (JsValue::This, JsValue::String(s)) => {
-                if s == "_pendingEvent" && self.shared_state().pending_event.null {
-                    JsValue::Null
-                } else if s == "_pendingEvent" {
-                    JsValue::PendingEvent
-                } else {
-                    JsValue::String(format!("this.{}", s).to_string())
-                }
-            }
-            (JsValue::Array(v), JsValue::Int64(i)) => {
-                if *i == 1 {
-                    self.shared_state().pending_event.null = true;
-                }
-                match v[*i as usize] {
-                    JsValue::Int(i) => JsValue::Int(i),
-                    JsValue::Null => JsValue::Null,
-                    _ => panic!("Not implemented {:?} {:?}", target, property_key),
-                }
-            }
-            _ => {
-                panic!("Not implemented {:?} {:?}", target, property_key);
-            }
-        }
-    }
-    fn reflect_set(&self, target: &JsValue, property_key: &str, value: &JsValue) {
-        match (target, property_key, value) {
-            (JsValue::This, "_pendingEvent", JsValue::Null) => {
-                // sets pending event to null but expects the object
-                // to still exist so we ignore this for now
-            }
-            (JsValue::PendingEvent, "result", JsValue::Null) => {}
-            _ => panic!(
-                "Not implemented {:?} {:?} {:?}",
-                target, property_key, value
-            ),
-        }
+    fn value_length(&self, target: i64) -> Option<i64> {
+        self.shared_state().js.value_length(target)
     }
     fn reflect_apply(
         &self,
-        target: &JsValue,
-        property_key: &JsValue,
-        argument_list: Vec<(Option<&JsValue>, Option<i32>)>,
-    ) -> JsValue {
-        if let Some(r) = match target {
-            JsValue::String(t) => match t.as_ref() {
-                "this._makeFuncWrapper" => {
-                    // this could be a boxed FnMut value for more flexbility
-                    // for now we just handle it as a one-off enum type
-                    let id = argument_list[0].1.unwrap();
-                    Some(JsValue::FuncWrapper { id: id })
+        target: i64,
+        this_argument: i64,
+        argument_list: Vec<(i64, bool)>,
+    ) -> Option<(i64, bool)> {
+        let target_name = self.shared_state().js.get_object_name(target).unwrap();
+        let this_argument_name = self
+            .shared_state()
+            .js
+            .get_object_name(this_argument)
+            .unwrap();
+
+        match (target_name, this_argument_name) {
+            ("getTimezoneOffset", "Date") => Some((0, false)),
+            ("register", "net_listener") => {
+                if let js::Value::Object { values, .. } =
+                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
+                {
+                    self.shared_state().net_callback_id = values.get("id").unwrap().0;
                 }
-                "crypto.getRandomValues" => {
-                    // String("crypto")[(
-                    //     Some(Memory {
-                    //         address: 201441472,
-                    //         len: 10,
-                    //     }),
-                    //     None,
-                    // )]
-                    if let JsValue::Memory { address, len } = argument_list[0].0.unwrap() {
-                        thread_rng()
-                            .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
-                    }
-                    Some(JsValue::Undefined)
+                Some((0, true))
+            }
+            ("_makeFuncWrapper", "this") => {
+                let wf = self.shared_state().js.slab_add(js::Value::Object {
+                    name: "wrappedFunc",
+                    values: HashMap::new(),
+                });
+                // maybe don't create an object here?
+                self.shared_state().js.add_object(wf, "this");
+                self.shared_state()
+                    .js
+                    .add_object_value(wf, "id", argument_list[0]);
+                Some((wf, true))
+            }
+            ("getRandomValues", "crypto") => {
+                if let js::Value::Memory { address, len } =
+                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
+                {
+                    thread_rng()
+                        .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
+                };
+                Some((0, true))
+            }
+            ("write", "fs") => {
+                // [
+                //     fd:       (1, false),
+                //     buffer:   (33, true),
+                //     offset:   (1, true),
+                //     len:      (85, false),
+                //               (2, true),
+                //     callback: (34, true),
+                // ];
+                if let js::Value::Memory { address, len } =
+                    self.shared_state().js.slab_get(argument_list[1].0).unwrap()
+                {
+                    print!(
+                        "{}",
+                        str::from_utf8(self._get_bytes(*address as usize, *len as usize)).unwrap()
+                    );
                 }
-                "Date.getTimezoneOffset" => Some(JsValue::Int(0)), // Always UTC
-                "fs.write" => {
-                    // String("fs write")
-                    // String("fs")
-                    // [
-                    //   fd:      (None, Some(1)),
-                    //   buffer:  (Some(Memory {
-                    //               address: 201441296,
-                    //               len: 16,
-                    //            }), None),
-                    //   offset:  (Some(Int(0)), None),
-                    //   len:     (None, Some(16)),
-                    //            (Some(Null), None),
-                    //            (Some(FuncWrapper { id: 1 }), None),
-                    // ]
-                    if let JsValue::Memory { address, len } = argument_list[1].0.unwrap() {
-                        print!(
-                            "{}",
-                            str::from_utf8(self._get_bytes(*address as usize, *len as usize))
-                                .unwrap()
-                        );
-                        self.shared_state().pending_event.len = *len;
-                        self.shared_state().pending_event.null = false;
-                        if let JsValue::FuncWrapper { id } = argument_list[5].0.unwrap() {
-                            self.shared_state().pending_event.id = *id
-                        }
-                        // arguments to callback might need to be pinned to global state
-                        Some(JsValue::Int(*len))
-                    } else {
-                        panic!("Incorrect JsValue variant for js.write buffer should be JsValue::Memory")
-                    }
-                }
-                _ => None,
-            },
-            _ => None,
-        } {
-            return r;
-        } else {
-            panic!(
-                "Not implemented {:?} {:?} {:?}",
-                target, property_key, argument_list
-            );
+                self.shared_state().js.add_array(
+                    argument_list[5].0,
+                    "args",
+                    vec![(2, true), argument_list[3]],
+                );
+                self.shared_state().call_queue.push_back(argument_list[5].0);
+                Some(argument_list[3])
+            }
+            _ => {
+                panic!(
+                    "No reflect_apply match on {:?} {:?}",
+                    target_name, this_argument_name
+                );
+            }
         }
     }
     fn reflect_construct(
         &self,
-        target: &JsValue,
-        argument_list: Vec<(Option<&JsValue>, Option<i32>)>,
-    ) -> JsValue {
-        if let Some(r) = match target {
-            JsValue::String(t) => match t.as_ref() {
-                // Expected format:
-                // String("Uint8Array")
-                // [
-                //     (Some(String("mem.buffer")), None),
-                //     (None, Some(201441296)),
-                //     (None, Some(16)),
-                // ];
-                "Uint8Array" => Some(JsValue::Memory {
-                    address: argument_list[1].1.unwrap(),
-                    len: argument_list[2].1.unwrap(),
-                }),
-                "Date" => Some(JsValue::String("Date".to_string())),
-                _ => None,
-            },
-            _ => None,
-        } {
-            return r;
-        } else {
-            panic!("Not implemented {:?} {:?}", target, argument_list);
-        }
+        target: i64,
+        argument_list: Vec<(i64, bool)>,
+    ) -> Option<(i64, bool)> {
+        self.shared_state()
+            .js
+            .reflect_construct(target, argument_list)
     }
+
     fn get_i32(&self, sp: i32) -> i32 {
         let spu = sp as usize;
         as_i32_le(self.mem_slice(spu, spu + 8))
@@ -368,6 +263,24 @@ trait ContextHelpers {
     fn _get_bytes(&self, address: usize, ln: usize) -> &[u8] {
         self.mem_slice(address, address + ln)
     }
+    fn get_static_string(&self, sp: i32) -> &'static str {
+        let key = str::from_utf8(self.get_bytes(sp)).unwrap();
+        if key == "AbortController" {
+            panic!([
+                "\"AbortController\" requested. This likely means ",
+                "the default js/wasm roundtripper is being used. Wasabi",
+                " doesn't support this, use the wasabi networking libary."
+            ]
+            .join(""))
+        }
+        match self.shared_state().js.static_strings.get(&key) {
+            Some(v) => v,
+            None => {
+                panic!("No existing static string matching {:?}", key);
+            }
+        }
+    }
+
     fn get_string(&self, sp: i32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
@@ -396,55 +309,34 @@ trait ContextHelpers {
         }
         self.set_i32(addr, self.store_value_bytes(byte_references))
     }
-    fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
-        let reference = self.values().len() as i32;
-        self.values().push(JsValue::Bytes(b));
-        reference
-    }
-    fn store_value(&self, addr: i32, jsv: JsValue) {
-        let nan_head = 0x7FF80000;
-        match jsv {
-            JsValue::Int(int) => {
-                if int == 0 {
-                    self.set_u32(addr + 4, nan_head);
-                    self.set_u32(addr, 1);
-                    return;
-                }
-                self.set_f64(addr, int as f64);
+    fn set_usize_result(&self, addr: i32, result: io::Result<usize>) {
+        match result {
+            Ok(value) => {
+                self.set_i32(addr, value as i32);
+                self.set_bool(addr + 4, true);
             }
-            JsValue::Null => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 2);
-            }
-            JsValue::True => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 3);
-            }
-            JsValue::False => {
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, 4);
-            }
-            _ => {
-                let reference = self.values().len() as i32;
-                self.values().push(jsv);
-                self.set_u32(addr + 4, nan_head);
-                self.set_u32(addr, reference as u32);
+            Err(err) => {
+                self.set_error(addr, &err);
+                self.set_bool(addr + 4, false);
             }
         }
+    }
+
+    fn set_error(&self, addr: i32, err: &Error) {
+        self.store_string(addr, err.to_string())
+    }
+    fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
+        self.shared_state().js.slab_add(js::Value::Bytes(b)) as i32
+    }
+    fn store_value(&self, addr: i32, jsv: (i64, bool)) {
+        let b = js::store_value(jsv);
+        let addru = addr as usize;
+        self.mut_mem_slice(addru, addru + 8).copy_from_slice(&b)
     }
     fn store_string(&self, address: i32, val: String) {
         self.set_i32(address, self.store_value_bytes(val.into_bytes()));
     }
-    // get_string
-    fn load_string(&self, address: i32) -> String {
-        let reference = self.get_i32(address);
-        let b = match self.values()[reference as usize] {
-            JsValue::Bytes(ref b) => b,
-            _ => panic!("load_string needs bytes"),
-        };
-        str::from_utf8(&b).unwrap().to_string()
-    }
-    fn load_slice_of_values(&self, address: i32) -> Vec<(Option<&JsValue>, Option<i32>)> {
+    fn load_slice_of_values(&self, address: i32) -> Vec<(i64, bool)> {
         let mut out = Vec::new();
         let array = self.get_i32(address);
         let len = self.get_i32(address + 8);
@@ -453,79 +345,23 @@ trait ContextHelpers {
         }
         out
     }
-    fn load_value(&self, address: i32) -> (Option<&JsValue>, Option<i32>) {
-        let float = self.get_f64(address);
-        let intfloat = float as i32;
-
-        if float == (intfloat) as f64 {
-            //https://stackoverflow.com/questions/48500261/check-if-a-float-can-be-converted-to-integer-without-loss
-            return (None, Some(intfloat));
-        }
-        let reference = self.get_i32(address);
-        return (Some(&self.values()[reference as usize]), None);
+    fn load_value(&self, address: i32) -> (i64, bool) {
+        let addru = address as usize;
+        js::load_value(&self.mem_slice(addru, addru + 8))
     }
-}
-
-fn as_i32_le(array: &[u8]) -> i32 {
-    ((array[0] as i32) << 0)
-        | ((array[1] as i32) << 8)
-        | ((array[2] as i32) << 16)
-        | ((array[3] as i32) << 24)
-}
-
-fn as_i64_le(array: &[u8]) -> i64 {
-    ((array[0] as i64) << 0)
-        | ((array[1] as i64) << 8)
-        | ((array[2] as i64) << 16)
-        | ((array[3] as i64) << 24)
-        | ((array[4] as i64) << 32)
-        | ((array[5] as i64) << 40)
-        | ((array[6] as i64) << 48)
-        | ((array[7] as i64) << 56)
-}
-
-fn i64_as_u8_le(x: i64) -> [u8; 8] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-        ((x >> 32) & 0xff) as u8,
-        ((x >> 40) & 0xff) as u8,
-        ((x >> 48) & 0xff) as u8,
-        ((x >> 56) & 0xff) as u8,
-    ]
-}
-
-fn i32_as_u8_le(x: i32) -> [u8; 4] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-    ]
-}
-
-fn u32_as_u8_le(x: u32) -> [u8; 4] {
-    [
-        (x & 0xff) as u8,
-        ((x >> 8) & 0xff) as u8,
-        ((x >> 16) & 0xff) as u8,
-        ((x >> 24) & 0xff) as u8,
-    ]
 }
 
 fn epoch_ns() -> i64 {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    since_the_epoch.as_secs() as i64 * 1_000_000_000 + since_the_epoch.subsec_nanos() as i64
+    since_the_epoch.as_secs() as i64 * 1_000_000_000 + i64::from(since_the_epoch.subsec_nanos())
 }
 
 extern "C" fn go_debug(_sp: i32) {
     println!("debug")
 }
 
-extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let count = fc.get_i64(sp + 8);
     let id = fc.shared_state().next_callback_timeout_id;
@@ -533,11 +369,11 @@ extern "C" fn go_schedule_timeout_event(sp: i32, vmctx: *mut VMContext) {
     fc.shared_state().next_callback_timeout_id += 1;
     fc.shared_state().callback_heap.push(Callback {
         time: epoch_ns() + count * 1_000_000,
-        id: id,
+        id,
     });
     fc.shared_state().callback_map.insert(id, true);
 }
-extern "C" fn go_clear_timeout_event(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     fc.shared_state().callback_map.remove(&id);
@@ -546,35 +382,41 @@ extern "C" fn go_syscall(_sp: i32) {
     println!("go_syscall")
 }
 
-extern "C" fn go_js_string_val(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    fc.store_value(sp + 24, JsValue::String(fc.get_string(sp + 8).to_string()));
-}
-
-extern "C" fn go_js_value_get(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    let result = fc.reflect_get(
-        &fc.load_value(sp + 8).0.unwrap(),
-        &JsValue::String(fc.get_string(sp + 16).to_string()),
-    );
-    fc.store_value(sp + 32, result);
-}
-extern "C" fn go_js_value_set(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    fc.reflect_set(
-        fc.load_value(sp + 8).0.unwrap(),
-        fc.get_string(sp + 16),
-        fc.load_value(sp + 32).0.unwrap(),
-    );
-}
-extern "C" fn go_js_value_index(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_string_val(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     fc.store_value(
         sp + 24,
-        fc.reflect_get(
-            fc.load_value(sp + 8).0.unwrap(),
-            &JsValue::Int64(fc.get_i64(sp + 16)),
+        (
+            fc.shared_state()
+                .js
+                .slab_add(js::Value::String(fc.get_string(sp + 8).to_string())),
+            true,
         ),
+    );
+}
+
+extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let result = fc
+        .reflect_get(fc.load_value(sp + 8).0, &fc.get_static_string(sp + 16))
+        .unwrap();
+    fc.store_value(sp + 32, result);
+}
+extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    // TODO check that return of load_value is actually a ref
+    fc.shared_state().js.reflect_set(
+        fc.load_value(sp + 8).0,
+        fc.get_static_string(sp + 16),
+        fc.load_value(sp + 32).0,
+    );
+}
+extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    fc.store_value(
+        sp + 24,
+        fc.reflect_get_index(fc.load_value(sp + 8).0, fc.get_i64(sp + 16))
+            .unwrap(),
     );
 }
 extern "C" fn go_js_value_set_index(_sp: i32) {
@@ -583,32 +425,28 @@ extern "C" fn go_js_value_set_index(_sp: i32) {
 extern "C" fn go_js_value_invoke(_sp: i32) {
     println!("js_value_invoke")
 }
-extern "C" fn go_js_value_call(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
-    let g = JsValue::String(fc.get_string(sp + 16).to_string());
-    let m = fc.reflect_get(v.0.unwrap(), &g);
+    let m = fc.reflect_get(v.0, &fc.get_static_string(sp + 16)).unwrap();
     let args = fc.load_slice_of_values(sp + 32);
-    let result = fc.reflect_apply(&m, v.0.unwrap(), args);
+    let result = fc.reflect_apply(m.0, v.0, args).unwrap();
     // TODO: catch error and error
     fc.store_value(sp + 56, result);
     fc.set_bool(sp + 64, true);
 }
-extern "C" fn go_js_value_new(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
-    let v = fc
-        .load_value(sp + 8)
-        .0
-        .expect("Reflect.construct doesn't take an int");
+    let v = fc.load_value(sp + 8).0;
     let args = fc.load_slice_of_values(sp + 16);
-    let result = fc.reflect_construct(v, args);
+    let result = fc.reflect_construct(v, args).unwrap();
     fc.store_value(sp + 40, result);
     fc.set_bool(sp + 48, true);
 }
-extern "C" fn go_js_value_length(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
-    // args, length
-    fc.set_i64(sp + 16, 2);
+    let v = fc.load_value(sp + 8);
+    fc.set_i64(sp + 16, fc.value_length(v.0).unwrap());
 }
 extern "C" fn go_js_value_prepare_string(_sp: i32) {
     println!("js_value_prepare_string")
@@ -617,30 +455,7 @@ extern "C" fn go_js_value_load_string(_sp: i32) {
     println!("js_value_load_string")
 }
 
-extern "C" fn go_set_env(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    let key = fc.get_string(sp + 8);
-    let value = fc.get_string(sp + 24);
-    let envvars = fc.envvars();
-    envvars.insert(key.to_owned(), value.to_owned());
-}
-
-extern "C" fn go_get_env(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    let key = fc.get_string(sp + 8);
-    let envvars = fc.envvars();
-    match envvars.get(key) {
-        Some(value) => {
-            fc.set_bool(sp + 24, true);
-            fc.store_string(sp + 28, value.to_string());
-        }
-        None => {
-            fc.set_bool(sp + 24, false);
-        }
-    }
-}
-
-unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmexit(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let exit_code = fc.get_i32(sp + 8);
     if exit_code != 0 {
@@ -649,25 +464,12 @@ unsafe extern "C" fn go_wasmexit(sp: i32, vmctx: *mut VMContext) {
     fc.shared_state().exited = true;
 }
 
-unsafe extern "C" fn go_start_request(sp: i32, vmctx: *mut VMContext) {
-    let fc = FuncContext::new(vmctx);
-    println!("{:?}", fc.get_string(sp + 8));
-    let memory_def = &*fc.definition();
-    println!(
-        "{:?}",
-        &slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)
-            [(sp as usize)..(sp + 100) as usize]
-    );
-    let sender = fc.result_sender();
-    sender.send(fc.get_string(sp + 24 + 8).to_string()).unwrap();
-}
-
-unsafe extern "C" fn go_wasmwrite(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_wasmwrite(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     print!("{}", fc.get_string(sp + 16));
 }
 
-unsafe extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_walltime(vmctx: *mut VMContext, sp: i32) {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
     let fc = FuncContext::new(vmctx);
@@ -675,85 +477,132 @@ unsafe extern "C" fn go_walltime(sp: i32, vmctx: *mut VMContext) {
     fc.set_i32(sp + 8 + 8, since_the_epoch.subsec_nanos() as i32);
 }
 
-unsafe extern "C" fn go_nanotime(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_nanotime(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     fc.set_i64(sp + 8, epoch_ns());
 }
 
-unsafe extern "C" fn go_get_random_data(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_get_random_data(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
-    // let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
     let addr = fc.get_i32(sp + 8);
     let ln = fc.get_i32(sp + 16);
     thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
 }
 
-unsafe extern "C" fn go_load_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
 
-    let values = fc.values();
-    let b = match values[reference as usize] {
-        JsValue::Bytes(ref b) => b,
+    let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
+        js::Value::Bytes(ref b) => b,
         _ => panic!("load_bytes needs bytes"),
     };
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
-unsafe extern "C" fn go_prepare_bytes(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
-    let values = fc.values();
-    let b = match values[reference as usize] {
-        JsValue::Bytes(ref b) => b,
-        _ => panic!("prepare_bytes needs bytes"),
+
+    let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
+        js::Value::Bytes(ref b) => b,
+        _ => panic!("load_bytes needs bytes"),
     };
     fc.set_i64(sp + 16, b.len() as i64);
 }
 
-unsafe extern "C" fn go_lookup_ip(sp: i32, vmctx: *mut VMContext) {
+extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8);
+    match &addr.parse() {
+        Ok(addr) => {
+            let id = fc.shared_state().net_loop.tcp_listen(addr);
+            fc.set_usize_result(sp + 24, id);
+        }
+        Err(err) => {
+            fc.set_error(sp + 24, err);
+        }
+    }
+}
+
+extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let token = fc.get_i32(sp + 8);
+    println!("go_accept_tcp {}", token);
+    let id = fc.shared_state().net_loop.tcp_accept(token as usize);
+    fc.set_usize_result(sp + 16, id);
+}
+
+extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8);
+    println!("go_dial_tcp {}", addr);
+    match &addr.parse() {
+        Ok(addr) => {
+            let id = fc.shared_state().net_loop.tcp_connect(addr);
+            fc.set_usize_result(sp + 24, id);
+        }
+        Err(err) => {
+            fc.set_error(sp + 24, err);
+        }
+    }
+}
+
+extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
+    println!("go_write_tcp_conn");
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let addr = fc.get_i32(sp + 16);
+    let ln = fc.get_i32(sp + 24);
+    let written = fc.shared_state().net_loop.write_stream(
+        id as usize,
+        fc.mem_slice(addr as usize, (addr + ln) as usize),
+    );
+    fc.set_usize_result(sp + 40, written);
+}
+
+extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
+    println!("go_read_tcp_conn");
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let addr = fc.get_i32(sp + 16);
+    let ln = fc.get_i32(sp + 24);
+    let read = fc.shared_state().net_loop.read_stream(
+        id as usize,
+        fc.mut_mem_slice(addr as usize, (addr + ln) as usize),
+    );
+    fc.set_usize_result(sp + 40, read);
+}
+
+extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8);
     // TODO handle error
-    let ips = resolve_host(&addr).unwrap();
-    fc.set_bool(sp + 24 + 4, true);
-    let mut byte_ips: Vec<Vec<u8>> = Vec::new();
-    for ip in ips.iter() {
-        match ip {
-            IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
-            IpAddr::V6(_) => {}
+    match resolve_host(&addr) {
+        Ok(ips) => {
+            fc.set_bool(sp + 24 + 4, true);
+            let mut byte_ips: Vec<Vec<u8>> = Vec::new();
+            for ip in ips.iter() {
+                match ip {
+                    IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
+                    IpAddr::V6(_) => {} //no IPV6 support
+                }
+            }
+            fc.set_byte_array_array(sp + 24, byte_ips)
+        }
+        Err(err) => {
+            fc.set_bool(sp + 24 + 4, false);
+            fc.set_error(sp + 24, &err)
         }
     }
-    fc.set_byte_array_array(sp + 24, byte_ips)
 }
 
 fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
     (host, 0)
         .to_socket_addrs()
         .map(|iter| iter.map(|socket_address| socket_address.ip()).collect())
-}
-
-pub fn start_event_loop() -> mpsc::Sender<String> {
-    let (send, recv) = mpsc::channel();
-
-    thread::spawn(move || loop {
-        match recv.try_recv() {
-            Ok(pay) => {
-                println!("got payload{:?}", pay);
-                // Client::new().get(&pay).send();
-            }
-            Err(err) => match err {
-                std::sync::mpsc::TryRecvError::Empty => {}
-                std::sync::mpsc::TryRecvError::Disconnected => {
-                    return;
-                }
-            },
-        };
-    });
-
-    send
 }
 
 pub fn instantiate_go() -> Result<Instance, InstantiationError> {
@@ -763,108 +612,41 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let call_conv = isa::CallConv::triple_default(&HOST);
     let pointer_type = types::Type::triple_pointer_type(&HOST);
 
+    #[rustfmt::skip]
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
+        ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
+        ("runtime.getRandomData", go_get_random_data as *const VMFunctionBody),
+        ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
+        ("runtime.scheduleTimeoutEvent", go_schedule_timeout_event as *const VMFunctionBody),
+        ("runtime.walltime", go_walltime as *const VMFunctionBody),
         ("runtime.wasmExit", go_wasmexit as *const VMFunctionBody),
         ("runtime.wasmWrite", go_wasmwrite as *const VMFunctionBody),
-        ("syscall.wasmWrite", go_wasmwrite as *const VMFunctionBody),
-        ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
-        ("runtime.walltime", go_walltime as *const VMFunctionBody),
-        ("syscall.Syscall", go_syscall as *const VMFunctionBody),
-        ("net.lookupHost", go_lookup_ip as *const VMFunctionBody),
         ("syscall.socket", go_debug as *const VMFunctionBody),
-        (
-            "runtime.scheduleTimeoutEvent",
-            go_schedule_timeout_event as *const VMFunctionBody,
-        ),
-        (
-            "runtime.clearTimeoutEvent",
-            go_clear_timeout_event as *const VMFunctionBody,
-        ),
-        (
-            "runtime.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.getRandomData",
-            go_get_random_data as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.setenv",
-            go_set_env as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.getenv",
-            go_get_env as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.loadBytes",
-            go_load_bytes as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm.prepareBytes",
-            go_prepare_bytes as *const VMFunctionBody,
-        ),
-        (
-            "github.com/maxmcd/wasm-servers/gowasm/http.startRequest",
-            go_start_request as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.loadBytes",
-            go_load_bytes as *const VMFunctionBody,
-        ),
-        (
-            "syscall/wasm.prepareBytes",
-            go_prepare_bytes as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.stringVal",
-            go_js_string_val as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueGet",
-            go_js_value_get as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueSet",
-            go_js_value_set as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueIndex",
-            go_js_value_index as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueSetIndex",
-            go_js_value_set_index as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueCall",
-            go_js_value_call as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueNew",
-            go_js_value_new as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueInvoke",
-            go_js_value_invoke as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueLength",
-            go_js_value_length as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valuePrepareString",
-            go_js_value_prepare_string as *const VMFunctionBody,
-        ),
-        (
-            "syscall/js.valueLoadString",
-            go_js_value_load_string as *const VMFunctionBody,
-        ),
+        ("syscall.Syscall", go_syscall as *const VMFunctionBody),
+        ("syscall.wasmWrite", go_wasmwrite as *const VMFunctionBody),
+        ("syscall/js.stringVal", go_js_string_val as *const VMFunctionBody),
+        ("syscall/js.valueCall", go_js_value_call as *const VMFunctionBody),
+        ("syscall/js.valueGet", go_js_value_get as *const VMFunctionBody),
+        ("syscall/js.valueIndex", go_js_value_index as *const VMFunctionBody),
+        ("syscall/js.valueInvoke", go_js_value_invoke as *const VMFunctionBody),
+        ("syscall/js.valueLength", go_js_value_length as *const VMFunctionBody),
+        ("syscall/js.valueLoadString", go_js_value_load_string as *const VMFunctionBody),
+        ("syscall/js.valueNew", go_js_value_new as *const VMFunctionBody),
+        ("syscall/js.valuePrepareString", go_js_value_prepare_string as *const VMFunctionBody),
+        ("syscall/js.valueSet", go_js_value_set as *const VMFunctionBody),
+        ("syscall/js.valueSetIndex", go_js_value_set_index as *const VMFunctionBody),
+        ("syscall/wasm.getRandomData", go_get_random_data as *const VMFunctionBody),
+        ("syscall/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
+        ("syscall/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody),
     ];
 
     for func in functions.iter() {
@@ -902,6 +684,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
 
     Instance::new(
         Rc::new(module),
+        Rc::new(RefCell::new(HashMap::new())),
         finished_functions.into_boxed_slice(),
         imports,
         &data_initializers,
@@ -910,7 +693,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     )
 }
 
-fn strptr(s: &String, offset: usize, mem: &mut [u8]) -> (usize, usize) {
+fn strptr(s: &str, offset: usize, mem: &mut [u8]) -> (usize, usize) {
     let ptr = offset;
     mem[offset..offset + s.len()].copy_from_slice(s.as_bytes());
     mem[offset + s.len()] = 0u8;
@@ -941,7 +724,6 @@ fn load_args_from_mem(args: Vec<String>, mem: &mut [u8]) -> (i32, i32) {
 fn load_args_from_definition(args: Vec<String>, definition: *mut VMMemoryDefinition) -> (i32, i32) {
     let mut mem = unsafe {
         let memory_def = &*definition;
-        println!("{:?}", memory_def.current_length);
         &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[0..16384]
     };
     load_args_from_mem(args, &mut mem)
@@ -951,10 +733,12 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
     let mut c = Box::new(compiler);
     let mut namespace = Namespace::new();
     let instance = instantiate_go().expect("Instantiate go");
-    let go_index = namespace.instance(Some("go"), instance);
+    let go_index = namespace.instance(Some("go".to_string()), instance);
 
     let instantiate_timer = SystemTime::now();
-    let mut instance = instantiate(&mut *c, &data, &mut namespace).map_err(|e| e.to_string())?;
+    let global_exports = Rc::new(RefCell::new(HashMap::new()));
+    let mut instance =
+        instantiate(&mut *c, &data, &mut namespace, global_exports).map_err(|e| e.to_string())?;
     println!(
         "Instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
@@ -970,7 +754,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         None => panic!("no memory export found"),
     };
 
-    let index = namespace.instance(Some("main"), instance);
+    let index = namespace.instance(Some("main".to_string()), instance);
     {
         let instance = &mut namespace.instances[go_index];
         let host_state = instance
@@ -978,11 +762,9 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("not a thing");
         host_state.definition = Some(definition);
-        host_state.result_sender = Some(start_event_loop());
     }
 
     let (argc, argv) = load_args_from_definition(args, definition);
-    // resolver::start_event_loop();
     let mut function_name = "run";
     let mut args = vec![RuntimeValue::I32(argc), RuntimeValue::I32(argv)];
     let invoke_timer = SystemTime::now();
@@ -1002,23 +784,78 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         function_name = "resume";
         args = vec![];
         let instance = &mut namespace.instances[go_index];
-        let host_state = instance
+        let shared_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
-            .expect("not a thing");
+            .expect("host state is not a SharedState");
 
-        if host_state.pending_event.null == false {
+        // Stop execution if we've exited
+        if shared_state.exited {
+            break;
+        }
+
+        // Check for events if we have an active listener
+        if shared_state.net_loop.is_listening {
+            let mut events = Vec::new();
+
+            // If there's nothing to be called, wait for network events
+            if shared_state.call_queue.is_empty() {
+                // block if there's nothing else to do
+                events.push(shared_state.net_loop.recv().unwrap());
+            }
+            // Regardless of the state of the call stack, try and fetch some
+            // events
+            while let Ok(event) = shared_state.net_loop.try_recv() {
+                events.push(event)
+            }
+            let mut network_cb_args = Vec::new();
+            for event in &events {
+                println!("event {:?}", event);
+                let ints = network::event_to_ints(event);
+                network_cb_args.push((ints.0, false));
+                network_cb_args.push((ints.1, false));
+            }
+            if !network_cb_args.is_empty() {
+                // Add the network callback to the call stack
+                let ncbid = shared_state.net_callback_id;
+                shared_state.add_pending_event(ncbid, network_cb_args);
+            }
+        }
+
+        // Invoke an event by setting it as the this._pendingEvent
+        if !shared_state.call_queue.is_empty() {
+            shared_state.js.add_object_value(
+                7,
+                "_pendingEvent",
+                (shared_state.call_queue.pop_front().unwrap(), true),
+            );
             continue;
         }
-        if let Some(callback) = host_state.callback_heap.pop() {
+
+        // If we have a setTimeout style call, sleep
+        // TODO: actually make this play nice with other loop behavior
+        // If the call_queue has items
+        if let Some(callback) = shared_state.callback_heap.pop() {
             let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
             thread::sleep(sleep_time);
             continue;
         }
-        if host_state.exited == false {
-            host_state.pending_event.id = 0;
+
+        // If we have things to call let the program continue for another loop
+        if !shared_state.call_queue.is_empty() {
             continue;
         }
+
+        // If we get this far we've run out of things to do, but the program
+        // hasn't exited normally. Set pending event to 0 to trigger a stack
+        // dump and exit
+        if !shared_state.exited {
+            shared_state.exited = true;
+            // TODO: fix this it doesn't run as expected
+            shared_state.add_pending_event(0, Vec::new());
+            continue;
+        }
+
         break;
     }
     println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
@@ -1046,7 +883,7 @@ mod tests {
 
     impl TestContext {
         fn new(vmctx: *mut TestVMContext, v: TestVMContext) -> Self {
-            Self { vmctx: vmctx, v: v }
+            Self { vmctx, v }
         }
     }
     impl ContextHelpers for TestContext {
@@ -1075,7 +912,6 @@ mod tests {
             mem: Box::new(mem),
         };
         let tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
-        tc.values(); //prevents the mem from being freed?
         tc
     }
 
@@ -1108,6 +944,4 @@ mod tests {
         assert_eq!(-2147483647, tc.get_i32(0));
     }
 
-    // #[test]
-    // fn ms() {}
 }
