@@ -101,7 +101,7 @@ impl FuncContext {
 }
 
 impl ContextHelpers for FuncContext {
-    fn shared_state(&self) -> &mut SharedState {
+    fn shared_state_mut(&mut self) -> &mut SharedState {
         unsafe {
             (&mut *self.vmctx)
                 .host_state()
@@ -109,7 +109,16 @@ impl ContextHelpers for FuncContext {
                 .unwrap()
         }
     }
-    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+    fn shared_state(&self) -> &SharedState {
+        &*unsafe {
+            (&mut *self.vmctx)
+                .host_state()
+                .downcast_mut::<SharedState>()
+                .unwrap()
+        }
+    }
+
+    fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
         unsafe {
             let memory_def = &*self.definition();
             &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
@@ -124,17 +133,21 @@ impl ContextHelpers for FuncContext {
 }
 
 trait ContextHelpers {
-    fn shared_state(&self) -> &mut SharedState;
+    fn shared_state(&self) -> &SharedState;
+    fn shared_state_mut(&mut self) -> &mut SharedState;
     fn definition(&self) -> *mut VMMemoryDefinition {
         self.shared_state().definition.unwrap()
     }
-    fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8];
+    fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8];
     fn mem_slice(&self, start: usize, end: usize) -> &[u8];
-    fn js(&self) -> &mut js::Js {
-        &mut self.shared_state().js
+    fn js(&self) -> &js::Js {
+        &self.shared_state().js
+    }
+    fn js_mut(&mut self) -> &mut js::Js {
+        &mut self.shared_state_mut().js
     }
     fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
-        self.shared_state()
+        self.shared_state_mut()
             .js
             .reflect_set(target, property_key, value)
     }
@@ -150,7 +163,7 @@ trait ContextHelpers {
         self.shared_state().js.value_length(target)
     }
     fn reflect_apply(
-        &self,
+        &mut self,
         target: i64,
         this_argument: i64,
         argument_list: Vec<(i64, bool)>,
@@ -165,32 +178,38 @@ trait ContextHelpers {
         match (target_name, this_argument_name) {
             ("getTimezoneOffset", "Date") => Some((0, false)),
             ("register", "net_listener") => {
-                if let js::Value::Object { values, .. } =
-                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
-                {
-                    self.shared_state().net_callback_id = values.get("id").unwrap().0;
-                }
+                let values = {
+                    match self.shared_state().js.slab_get(argument_list[0].0).unwrap() {
+                        js::Value::Object { values, .. } => values.get("id").unwrap().0,
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                self.shared_state_mut().net_callback_id = values;
                 Some((0, true))
             }
             ("_makeFuncWrapper", "this") => {
-                let wf = self.shared_state().js.slab_add(js::Value::Object {
+                let mut js = self.js_mut();
+                let wf = js.slab_add(js::Value::Object {
                     name: "wrappedFunc",
                     values: HashMap::new(),
                 });
                 // maybe don't create an object here?
-                self.shared_state().js.add_object(wf, "this");
-                self.shared_state()
-                    .js
-                    .add_object_value(wf, "id", argument_list[0]);
+                js.add_object(wf, "this");
+                js.add_object_value(wf, "id", argument_list[0]);
                 Some((wf, true))
             }
             ("getRandomValues", "crypto") => {
-                if let js::Value::Memory { address, len } =
-                    self.shared_state().js.slab_get(argument_list[0].0).unwrap()
-                {
-                    thread_rng()
-                        .fill(self.mut_mem_slice(*address as usize, (address + len) as usize));
+                let (address, len) = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::Memory { address, len } => (*address as usize, *len as usize),
+                        _ => {
+                            return None;
+                        }
+                    }
                 };
+                thread_rng().fill(self.mut_mem_slice(address, address + len));
                 Some((0, true))
             }
             ("write", "fs") => {
@@ -202,20 +221,23 @@ trait ContextHelpers {
                 //               (2, true),
                 //     callback: (34, true),
                 // ];
-                if let js::Value::Memory { address, len } =
-                    self.shared_state().js.slab_get(argument_list[1].0).unwrap()
-                {
-                    print!(
-                        "{}",
-                        str::from_utf8(self._get_bytes(*address as usize, *len as usize)).unwrap()
-                    );
-                }
-                self.shared_state().js.add_array(
+                let (address, len) = {
+                    match self.js().slab_get(argument_list[1].0).unwrap() {
+                        js::Value::Memory { address, len } => (*address as usize, *len as usize),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                print!("{}", str::from_utf8(self._get_bytes(address, len)).unwrap());
+                self.js_mut().add_array(
                     argument_list[5].0,
                     "args",
                     vec![(2, true), argument_list[3]],
                 );
-                self.shared_state().call_queue.push_back(argument_list[5].0);
+                self.shared_state_mut()
+                    .call_queue
+                    .push_back(argument_list[5].0);
                 Some(argument_list[3])
             }
             _ => {
