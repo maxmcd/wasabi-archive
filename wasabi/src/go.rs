@@ -138,6 +138,10 @@ trait ContextHelpers {
     fn definition(&self) -> *mut VMMemoryDefinition {
         self.shared_state().definition.unwrap()
     }
+    fn mem(&self) -> (*mut u8, usize) {
+        let memory_def = unsafe { &*self.definition() };
+        (memory_def.base, memory_def.current_length)
+    }
     fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8];
     fn mem_slice(&self, start: usize, end: usize) -> &[u8];
     fn js(&self) -> &js::Js {
@@ -249,11 +253,11 @@ trait ContextHelpers {
         }
     }
     fn reflect_construct(
-        &self,
+        &mut self,
         target: i64,
         argument_list: Vec<(i64, bool)>,
     ) -> Option<(i64, bool)> {
-        self.shared_state()
+        self.shared_state_mut()
             .js
             .reflect_construct(target, argument_list)
     }
@@ -274,7 +278,7 @@ trait ContextHelpers {
     fn get_f64(&self, sp: i32) -> f64 {
         f64::from_bits(self.get_i64(sp) as u64)
     }
-    fn set_f64(&self, sp: i32, num: f64) {
+    fn set_f64(&mut self, sp: i32, num: f64) {
         self.set_i64(sp, num.to_bits() as i64);
     }
     fn get_bytes(&self, sp: i32) -> &[u8] {
@@ -306,32 +310,33 @@ trait ContextHelpers {
     fn get_string(&self, sp: i32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
-    fn set_i64(&self, sp: i32, num: i64) {
+    fn set_i64(&mut self, sp: i32, num: i64) {
         self.mut_mem_slice(sp as usize, (sp + 8) as usize)
             .clone_from_slice(&i64_as_u8_le(num));
     }
-    fn set_i32(&self, sp: i32, num: i32) {
+    fn set_i32(&mut self, sp: i32, num: i32) {
         self.mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&i32_as_u8_le(num));
     }
-    fn set_u32(&self, sp: i32, num: u32) {
+    fn set_u32(&mut self, sp: i32, num: u32) {
         self.mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&u32_as_u8_le(num));
     }
-    fn set_bool(&self, addr: i32, value: bool) {
+    fn set_bool(&mut self, addr: i32, value: bool) {
         let val = if value { 1 } else { 0 };
         self.mut_mem_slice(addr as usize, (addr + 1) as usize)
             .clone_from_slice(&[val]);
     }
-    fn set_byte_array_array(&self, addr: i32, values: Vec<Vec<u8>>) {
+    fn set_byte_array_array(&mut self, addr: i32, values: Vec<Vec<u8>>) {
         let mut byte_references = vec![0; values.len() * 4];
         for (i, value) in values.iter().enumerate() {
             let reference = self.store_value_bytes(value.to_vec());
             byte_references[i * 4..i * 4 + 4].clone_from_slice(&i32_as_u8_le(reference));
         }
-        self.set_i32(addr, self.store_value_bytes(byte_references))
+        let reference = self.store_value_bytes(byte_references);
+        self.set_i32(addr, reference);
     }
-    fn set_usize_result(&self, addr: i32, result: io::Result<usize>) {
+    fn set_usize_result(&mut self, addr: i32, result: io::Result<usize>) {
         match result {
             Ok(value) => {
                 self.set_i32(addr, value as i32);
@@ -344,19 +349,20 @@ trait ContextHelpers {
         }
     }
 
-    fn set_error(&self, addr: i32, err: &Error) {
+    fn set_error(&mut self, addr: i32, err: &Error) {
         self.store_string(addr, err.to_string())
     }
-    fn store_value_bytes(&self, b: Vec<u8>) -> i32 {
-        self.shared_state().js.slab_add(js::Value::Bytes(b)) as i32
+    fn store_value_bytes(&mut self, b: Vec<u8>) -> i32 {
+        self.shared_state_mut().js.slab_add(js::Value::Bytes(b)) as i32
     }
-    fn store_value(&self, addr: i32, jsv: (i64, bool)) {
+    fn store_value(&mut self, addr: i32, jsv: (i64, bool)) {
         let b = js::store_value(jsv);
         let addru = addr as usize;
         self.mut_mem_slice(addru, addru + 8).copy_from_slice(&b)
     }
-    fn store_string(&self, address: i32, val: String) {
-        self.set_i32(address, self.store_value_bytes(val.into_bytes()));
+    fn store_string(&mut self, address: i32, val: String) {
+        let reference = self.store_value_bytes(val.into_bytes());
+        self.set_i32(address, reference);
     }
     fn load_slice_of_values(&self, address: i32) -> Vec<(i64, bool)> {
         let mut out = Vec::new();
@@ -384,62 +390,56 @@ extern "C" fn go_debug(_sp: i32) {
 }
 
 extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let count = fc.get_i64(sp + 8);
     let id = fc.shared_state().next_callback_timeout_id;
     fc.set_i32(sp + 16, id);
-    fc.shared_state().next_callback_timeout_id += 1;
-    fc.shared_state().callback_heap.push(Callback {
+    fc.shared_state_mut().next_callback_timeout_id += 1;
+    fc.shared_state_mut().callback_heap.push(Callback {
         time: epoch_ns() + count * 1_000_000,
         id,
     });
-    fc.shared_state().callback_map.insert(id, true);
+    fc.shared_state_mut().callback_map.insert(id, true);
 }
 extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
-    fc.shared_state().callback_map.remove(&id);
+    fc.shared_state_mut().callback_map.remove(&id);
 }
 extern "C" fn go_syscall(_sp: i32) {
     println!("go_syscall")
 }
 
 extern "C" fn go_js_string_val(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    fc.store_value(
-        sp + 24,
-        (
-            fc.shared_state()
-                .js
-                .slab_add(js::Value::String(fc.get_string(sp + 8).to_string())),
-            true,
-        ),
-    );
+    let mut fc = FuncContext::new(vmctx);
+    let string = js::Value::String(fc.get_string(sp + 8).to_string());
+    let reference = fc.shared_state_mut().js.slab_add(string);
+    fc.store_value(sp + 24, (reference, true));
 }
 
 extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let result = fc
         .reflect_get(fc.load_value(sp + 8).0, &fc.get_static_string(sp + 16))
         .unwrap();
     fc.store_value(sp + 32, result);
 }
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     // TODO check that return of load_value is actually a ref
-    fc.shared_state().js.reflect_set(
-        fc.load_value(sp + 8).0,
-        fc.get_static_string(sp + 16),
-        fc.load_value(sp + 32).0,
-    );
+    let target = fc.load_value(sp + 8).0;
+    let property_key = fc.get_static_string(sp + 16);
+    let value = fc.load_value(sp + 32).0;
+    fc.shared_state_mut()
+        .js
+        .reflect_set(target, property_key, value);
 }
 extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    fc.store_value(
-        sp + 24,
-        fc.reflect_get_index(fc.load_value(sp + 8).0, fc.get_i64(sp + 16))
-            .unwrap(),
-    );
+    let mut fc = FuncContext::new(vmctx);
+    let target = fc.load_value(sp + 8).0;
+    let property_key = fc.get_i64(sp + 16);
+    let jsv = fc.reflect_get_index(target, property_key).unwrap();
+    fc.store_value(sp + 24, jsv);
 }
 extern "C" fn go_js_value_set_index(_sp: i32) {
     println!("js_value_set_index")
@@ -448,7 +448,7 @@ extern "C" fn go_js_value_invoke(_sp: i32) {
     println!("js_value_invoke")
 }
 extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
     let m = fc.reflect_get(v.0, &fc.get_static_string(sp + 16)).unwrap();
     let args = fc.load_slice_of_values(sp + 32);
@@ -458,7 +458,7 @@ extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     fc.set_bool(sp + 64, true);
 }
 extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8).0;
     let args = fc.load_slice_of_values(sp + 16);
     let result = fc.reflect_construct(v, args).unwrap();
@@ -466,9 +466,10 @@ extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     fc.set_bool(sp + 48, true);
 }
 extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
-    fc.set_i64(sp + 16, fc.value_length(v.0).unwrap());
+    let num = fc.value_length(v.0).unwrap();
+    fc.set_i64(sp + 16, num);
 }
 extern "C" fn go_js_value_prepare_string(_sp: i32) {
     println!("js_value_prepare_string")
@@ -478,12 +479,12 @@ extern "C" fn go_js_value_load_string(_sp: i32) {
 }
 
 extern "C" fn go_wasmexit(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let exit_code = fc.get_i32(sp + 8);
     if exit_code != 0 {
         println!("Wasm exited with a non-zero exit code: {}", exit_code);
     }
-    fc.shared_state().exited = true;
+    fc.shared_state_mut().exited = true;
 }
 
 extern "C" fn go_wasmwrite(vmctx: *mut VMContext, sp: i32) {
@@ -494,53 +495,53 @@ extern "C" fn go_wasmwrite(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_walltime(vmctx: *mut VMContext, sp: i32) {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     fc.set_i64(sp + 8, since_the_epoch.as_secs() as i64);
     fc.set_i32(sp + 8 + 8, since_the_epoch.subsec_nanos() as i32);
 }
 
 extern "C" fn go_nanotime(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     fc.set_i64(sp + 8, epoch_ns());
 }
 
 extern "C" fn go_get_random_data(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let addr = fc.get_i32(sp + 8);
     let ln = fc.get_i32(sp + 16);
     thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
 }
 
 extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
 
     let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
-        js::Value::Bytes(ref b) => b,
+        js::Value::Bytes(ref b) => b.clone(), // TODO: extra clone here to get around borrow checker
         _ => panic!("load_bytes needs bytes"),
     };
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
 extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
 
-    let b = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
-        js::Value::Bytes(ref b) => b,
+    let len = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
+        js::Value::Bytes(ref b) => b.len(),
         _ => panic!("load_bytes needs bytes"),
     };
-    fc.set_i64(sp + 16, b.len() as i64);
+    fc.set_i64(sp + 16, len as i64);
 }
 
 extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    let addr = fc.get_string(sp + 8);
+    let mut fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8).to_owned(); // TODO errant allocation for the borrow checker
     match &addr.parse() {
         Ok(addr) => {
-            let id = fc.shared_state().net_loop.tcp_listen(addr);
+            let id = fc.shared_state_mut().net_loop.tcp_listen(addr);
             fc.set_usize_result(sp + 24, id);
         }
         Err(err) => {
@@ -550,20 +551,20 @@ extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
 }
 
 extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
     println!("go_accept_tcp {}", token);
-    let id = fc.shared_state().net_loop.tcp_accept(token as usize);
+    let id = fc.shared_state_mut().net_loop.tcp_accept(token as usize);
     fc.set_usize_result(sp + 16, id);
 }
 
 extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    let addr = fc.get_string(sp + 8);
+    let mut fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8).to_owned();
     println!("go_dial_tcp {}", addr);
     match &addr.parse() {
         Ok(addr) => {
-            let id = fc.shared_state().net_loop.tcp_connect(addr);
+            let id = fc.shared_state_mut().net_loop.tcp_connect(addr);
             fc.set_usize_result(sp + 24, id);
         }
         Err(err) => {
@@ -574,7 +575,7 @@ extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
 
 extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     println!("go_write_tcp_conn");
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
     let ln = fc.get_i32(sp + 24);
@@ -587,20 +588,21 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
 
 extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     println!("go_read_tcp_conn");
-    let fc = FuncContext::new(vmctx);
+    let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
-    let addr = fc.get_i32(sp + 16);
-    let ln = fc.get_i32(sp + 24);
-    let read = fc.shared_state().net_loop.read_stream(
-        id as usize,
-        fc.mut_mem_slice(addr as usize, (addr + ln) as usize),
-    );
+    let start = fc.get_i32(sp + 16);
+    let end = fc.get_i32(sp + 24);
+    // TODO Instead of pulling out addr and len and casting the memory inline
+    // let's look into getting mut_mem without tying the lifetime to fc
+    let (addr, len) = fc.mem();
+    let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
+    let read = fc.shared_state().net_loop.read_stream(id as usize, mem);
     fc.set_usize_result(sp + 40, read);
 }
 
 extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    let addr = fc.get_string(sp + 8);
+    let mut fc = FuncContext::new(vmctx);
+    let addr = fc.get_string(sp + 8).to_owned();
     // TODO handle error
     match resolve_host(&addr) {
         Ok(ips) => {
