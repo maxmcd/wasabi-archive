@@ -911,14 +911,14 @@ mod tests {
         }
     }
     impl ContextHelpers for TestContext {
-        fn mut_mem_slice(&self, start: usize, end: usize) -> &mut [u8] {
+        fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
             unsafe { &mut (&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
         }
         fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
             unsafe { &(&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
         }
 
-        fn shared_state(&self) -> &mut SharedState {
+        fn shared_state_mut(&mut self) -> &mut SharedState {
             unsafe {
                 (&mut *self.vmctx)
                     .shared_state
@@ -926,17 +926,14 @@ mod tests {
                     .unwrap()
             }
         }
-    }
-
-    fn test_context() -> TestContext {
-        let ss = SharedState::new();
-        let mem: Vec<u8> = vec![0; 100];
-        let mut vmc = TestVMContext {
-            shared_state: Box::new(ss),
-            mem: Box::new(mem),
-        };
-        let tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
-        tc
+        fn shared_state(&self) -> &SharedState {
+            &*unsafe {
+                (&mut *self.vmctx)
+                    .shared_state
+                    .downcast_mut::<SharedState>()
+                    .unwrap()
+            }
+        }
     }
 
     #[test]
@@ -961,7 +958,14 @@ mod tests {
 
     #[test]
     fn i32_get_and_set() {
-        let tc = test_context();
+        let ss = SharedState::new();
+        let mem: Vec<u8> = vec![0; 100];
+        let mut vmc = TestVMContext {
+            shared_state: Box::new(ss),
+            mem: Box::new(mem),
+        };
+        let mut tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
+        println!("{:?}", tc.mem_slice(0, 0));
         tc.set_i32(0, 2147483647);
         assert_eq!(2147483647, tc.get_i32(0));
         tc.set_i32(0, -2147483647);
