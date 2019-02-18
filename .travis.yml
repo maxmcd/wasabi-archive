@@ -36,4 +36,5 @@ cache:
 
 script:
 - ./go-lib-runtime-test.sh
+- ./go-net-test-req.sh
 - cd wasabi && RUST_BACKTRACE=full cargo +nightly test --release -- --nocapture

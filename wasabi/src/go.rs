@@ -79,7 +79,6 @@ impl SharedState {
         }
     }
     fn add_pending_event(&mut self, id: i64, args: Vec<(i64, bool)>) {
-        println!("Add pending event {:?}", (id, &args));
         let pe = self.js.slab_add(js::Value::Object {
             name: "pending_event",
             values: HashMap::new(),
@@ -553,7 +552,6 @@ extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let token = fc.get_i32(sp + 8);
-    println!("go_accept_tcp {}", token);
     let id = fc.shared_state_mut().net_loop.tcp_accept(token as usize);
     fc.set_usize_result(sp + 16, id);
 }
@@ -561,7 +559,6 @@ extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8).to_owned();
-    println!("go_dial_tcp {}", addr);
     match &addr.parse() {
         Ok(addr) => {
             let id = fc.shared_state_mut().net_loop.tcp_connect(addr);
@@ -574,7 +571,6 @@ extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
 }
 
 extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
-    println!("go_write_tcp_conn");
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     let addr = fc.get_i32(sp + 16);
@@ -587,11 +583,10 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
 }
 
 extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
-    println!("go_read_tcp_conn");
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     let start = fc.get_i32(sp + 16);
-    let end = fc.get_i32(sp + 24);
+    let end = fc.get_i32(sp + 24) + start;
     // TODO Instead of pulling out addr and len and casting the memory inline
     // let's look into getting mut_mem without tying the lifetime to fc
     let (addr, len) = fc.mem();
@@ -834,7 +829,6 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             }
             let mut network_cb_args = Vec::new();
             for event in &events {
-                println!("event {:?}", event);
                 let ints = network::event_to_ints(event);
                 network_cb_args.push((ints.0, false));
                 network_cb_args.push((ints.1, false));

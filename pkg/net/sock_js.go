@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"syscall/js"
 	"time"
@@ -120,7 +121,7 @@ func (l *Listener) Accept() (c Conn, err error) {
 		}
 		bytes, _ := wasm.GetBytes(token)
 		err = errors.New(string(bytes))
-		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+		if !strings.Contains(err.Error(), "Resource temporarily unavailable (os error") {
 			return
 		}
 		if err = connections[l.token].readwait(); err != nil {
@@ -145,7 +146,7 @@ func (c *Conn) Read(b []byte) (ln int, err error) {
 		}
 		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
 		err = errors.New(string(bytes))
-		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+		if !strings.Contains(err.Error(), "Resource temporarily unavailable (os error") {
 			return 0, err
 		}
 		if err := connections[c.token].readwait(); err != nil {

@@ -51,7 +51,6 @@ impl NetLoop {
             loop {
                 t_poll.poll(&mut events, None).unwrap();
                 for event in events.iter() {
-                    println!("Got event in network.rs event loop {:?}", event);
                     event_sender.send(event).unwrap();
                 }
             }

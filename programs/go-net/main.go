@@ -44,37 +44,33 @@ func lookupIPAddr() {
 }
 
 func tcpHTTPServer() {
-	_, err := wnet.ListenTcp("127.0.0:8000")
+	_, err := wnet.ListenTcp("128.0.0:8080")
 	if err == nil {
 		panic("should have errored with invalid ip")
 	}
 	if err.Error() != "invalid IP address syntax" {
 		panic("incorrect error message")
 	}
-	l, err := wnet.ListenTcp("127.0.0.1:8000")
+	l, err := wnet.ListenTcp("127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("listening")
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			panic(err)
 		}
 		b := make([]byte, 10)
-		if ln, err := c.Read(b); err != nil {
+		if _, err := c.Read(b); err != nil {
 			panic(err)
-		} else {
-			fmt.Println(ln, b)
-		}
-		// crappy little http server
-		if ln, err := c.Write([]byte(`HTTP/1.1 200 OK
+		} // crappy little http server
+		if _, err := c.Write([]byte(`HTTP/1.1 200 OK
 Content-Length: 6
 Content-Type: text/plain
 
 wasabi`)); err != nil {
 			panic(err)
-		} else {
-			fmt.Println(ln)
 		}
 	}
 }
