@@ -72,13 +72,10 @@ impl Js {
         self.slab.get_mut(r as usize)
     }
     pub fn get_object_name(&self, r: i64) -> Option<&'static str> {
-        match self.slab_get(r) {
-            Some(o) => match o {
-                Value::Object { name, .. } => Some(name),
-                _ => None,
-            },
-            None => None,
+        if let Value::Object { name, .. } = self.slab_get(r)? {
+            return Some(name);
         }
+        None
     }
     pub fn add_object(&mut self, r: i64, name: &'static str) -> i64 {
         self.static_strings.insert(name, name);
@@ -133,81 +130,53 @@ impl Js {
         }
     }
     pub fn value_length(&self, target: i64) -> Option<(i64)> {
-        if let Some(v) = self.slab_get(target) {
-            match v {
-                Value::Array(rs) => Some(rs.len() as i64),
-                _ => None,
-            }
-        } else {
-            None
+        if let Value::Array(rs) = self.slab_get(target)? {
+            return Some(rs.len() as i64);
         }
+        None
     }
     pub fn reflect_get_index(&self, target: i64, property_key: i64) -> Option<(i64, bool)> {
-        if let Some(o) = self.slab_get(target) {
-            match o {
-                Value::Array(items) => Some(items[property_key as usize]),
-                _ => None,
-            }
-        } else {
-            None
+        if let Value::Array(items) = self.slab_get(target)? {
+            return Some(items[property_key as usize]);
         }
+        None
     }
     pub fn reflect_get(&self, target: i64, property_key: &'static str) -> Option<(i64, bool)> {
-        if let Some(o) = self.slab_get(target) {
-            match o {
-                Value::Object { values, .. } => {
-                    if let Some(s) = values.get(property_key) {
-                        Some(*s)
-                    } else {
-                        None
-                    }
-                }
-                // Value::Mem => {}
-                _ => None,
-            }
-        } else {
-            None
-        }
+        if let Value::Object { values, .. } = self.slab_get(target)? {
+            let s = values.get(property_key)?;
+            return Some(*s);
+        };
+        return None;
     }
     pub fn reflect_construct(
         &mut self,
         target: i64,
         argument_list: Vec<(i64, bool)>,
     ) -> Option<(i64, bool)> {
-        // TODO: don't pass around arbitrary ints as references within a function
-        let name = match self.slab_get(target) {
-            Some(o) => match o {
-                Value::Object { name, .. } => match *name {
-                    "Uint8Array" => Some(0),
-                    "Date" => Some(1),
-                    "net_listener" => Some(2),
-                    _ => None,
-                },
-                _ => None,
-            },
-            None => None,
+        let name = match self.slab_get(target)? {
+            Value::Object { name, .. } => *name,
+            _ => {
+                return None;
+            }
         };
         match name {
-            Some(key) => match key {
-                0 => Some((
-                    self.slab_add(Value::Memory {
-                        address: argument_list[1].0,
-                        len: argument_list[2].0,
-                    }),
-                    true,
-                )), //Uint8Array
-                1 => Some((target, true)), //Date
-                2 => {
-                    let nl = self.slab_add(Value::Object {
-                        name: "net_listener",
-                        values: HashMap::new(),
-                    });
-                    self.add_object(nl, "register");
-                    Some((nl, true))
-                } //net_listener
-                _ => None,
-            },
-            None => None,
+            "Uint8Array" => Some((
+                self.slab_add(Value::Memory {
+                    address: argument_list[1].0,
+                    len: argument_list[2].0,
+                }),
+                true,
+            )), //Uint8Array
+            "Date" => Some((target, true)), //Date
+            "net_listener" => {
+                let nl = self.slab_add(Value::Object {
+                    name: "net_listener",
+                    values: HashMap::new(),
+                });
+                self.add_object(nl, "register");
+                Some((nl, true))
+            } //net_listener
+            _ => None,
         }
     }
     pub fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
