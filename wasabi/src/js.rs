@@ -131,7 +131,7 @@ impl Js {
             let s = values.get(property_key)?;
             return Some(*s);
         };
-        return None;
+        None
     }
     pub fn reflect_construct(
         &mut self,
