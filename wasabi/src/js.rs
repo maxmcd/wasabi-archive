@@ -1,4 +1,5 @@
 use bytes;
+use failure::{err_msg, Error};
 use slab::Slab;
 use std::collections::HashMap;
 use std::i32;
@@ -77,57 +78,41 @@ impl Js {
         }
         None
     }
-    pub fn add_object(&mut self, r: i64, name: &'static str) -> i64 {
+    pub fn add_object(&mut self, r: i64, name: &'static str) -> Result<i64, Error> {
         self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Object {
             name,
             values: HashMap::new(),
         }) as i64;
-        if let Some(o) = self.slab_get_mut(r) {
-            match o {
-                Value::Object { values, .. } => {
-                    values.insert(name, (new_r, true));
-                    new_r
-                }
-                _ => {
-                    panic!("ref value is not an object");
-                }
-            }
-        } else {
-            panic!("ref doesn't exist");
-        }
+        self.add_object_value(r, name, (new_r, true))?;
+        Ok(new_r)
     }
-    pub fn add_array(&mut self, r: i64, name: &'static str, args: Vec<(i64, bool)>) -> i64 {
+    pub fn add_array(
+        &mut self,
+        r: i64,
+        name: &'static str,
+        args: Vec<(i64, bool)>,
+    ) -> Result<i64, Error> {
         self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Array(args)) as i64;
-        if let Some(o) = self.slab_get_mut(r) {
-            match o {
-                Value::Object { values, .. } => {
-                    values.insert(name, (new_r, true));
-                    new_r
-                }
-                _ => {
-                    panic!("ref value is not an object");
-                }
-            }
-        } else {
-            panic!("ref doesn't exist");
-        }
+        self.add_object_value(r, name, (new_r, true))?;
+        Ok(new_r)
     }
-    pub fn add_object_value(&mut self, r: i64, name: &'static str, value: (i64, bool)) {
+    pub fn add_object_value(
+        &mut self,
+        r: i64,
+        name: &'static str,
+        value: (i64, bool),
+    ) -> Result<(), Error> {
         self.static_strings.insert(name, name);
         if let Some(o) = self.slab_get_mut(r) {
-            match o {
-                Value::Object { values, .. } => {
-                    values.insert(name, value);
-                }
-                _ => {
-                    panic!("ref value is not an object");
-                }
+            if let Value::Object { values, .. } = o {
+                values.insert(name, value);
+                return Ok(());
             }
-        } else {
-            panic!("ref doesn't exist");
+            return Err(err_msg("ref value is not an object"));
         }
+        Err(err_msg("ref doesn't exist"))
     }
     pub fn value_length(&self, target: i64) -> Option<(i64)> {
         if let Value::Array(rs) = self.slab_get(target)? {
@@ -173,7 +158,7 @@ impl Js {
                     name: "net_listener",
                     values: HashMap::new(),
                 });
-                self.add_object(nl, "register");
+                self.add_object(nl, "register").unwrap();
                 Some((nl, true))
             } //net_listener
             _ => None,
@@ -186,7 +171,7 @@ impl Js {
             }
         }
     }
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, Error> {
         let mut js = Self {
             slab: Slab::new(),
             static_strings: HashMap::new(),
@@ -211,49 +196,49 @@ impl Js {
             values: HashMap::new(),
         }); //7 this
 
-        js.add_object(mem, "buffer");
+        js.add_object(mem, "buffer")?;
 
-        let fs = js.add_object(global, "fs");
-        js.add_object(fs, "write");
-        js.add_object(fs, "open");
-        js.add_object(fs, "read");
-        js.add_object(fs, "fsync");
-        let constants = js.add_object(fs, "constants");
+        let fs = js.add_object(global, "fs")?;
+        js.add_object(fs, "write")?;
+        js.add_object(fs, "open")?;
+        js.add_object(fs, "read")?;
+        js.add_object(fs, "fsync")?;
+        let constants = js.add_object(fs, "constants")?;
 
-        js.add_object_value(constants, "O_WRONLY", (-1, false));
-        js.add_object_value(constants, "O_RDWR", (-1, false));
-        js.add_object_value(constants, "O_CREAT", (-1, false));
-        js.add_object_value(constants, "O_TRUNC", (-1, false));
-        js.add_object_value(constants, "O_APPEND", (-1, false));
-        js.add_object_value(constants, "O_EXCL", (-1, false));
+        js.add_object_value(constants, "O_WRONLY", (-1, false))?;
+        js.add_object_value(constants, "O_RDWR", (-1, false))?;
+        js.add_object_value(constants, "O_CREAT", (-1, false))?;
+        js.add_object_value(constants, "O_TRUNC", (-1, false))?;
+        js.add_object_value(constants, "O_APPEND", (-1, false))?;
+        js.add_object_value(constants, "O_EXCL", (-1, false))?;
 
-        let crypto = js.add_object(global, "crypto");
-        js.add_object(crypto, "getRandomValues");
+        let crypto = js.add_object(global, "crypto")?;
+        js.add_object(crypto, "getRandomValues")?;
 
-        let pe = js.add_object(this, "_pendingEvent");
-        js.add_object_value(pe, "result", (2, true));
-        js.add_object(this, "_makeFuncWrapper");
+        let pe = js.add_object(this, "_pendingEvent")?;
+        js.add_object_value(pe, "result", (2, true))?;
+        js.add_object(this, "_makeFuncWrapper")?;
 
-        js.add_object(global, "Object");
-        js.add_object(global, "Array");
+        js.add_object(global, "Object")?;
+        js.add_object(global, "Array")?;
 
-        js.add_object(global, "Uint8Array");
-        js.add_object(global, "Int16Array");
-        js.add_object(global, "Int32Array");
-        js.add_object(global, "Int8Array");
-        js.add_object(global, "Uint16Array");
-        js.add_object(global, "Uint32Array");
-        js.add_object(global, "Float32Array");
-        js.add_object(global, "Float64Array");
-        js.add_object(global, "process");
-        js.add_object(global, "net_listener");
+        js.add_object(global, "Uint8Array")?;
+        js.add_object(global, "Int16Array")?;
+        js.add_object(global, "Int32Array")?;
+        js.add_object(global, "Int8Array")?;
+        js.add_object(global, "Uint16Array")?;
+        js.add_object(global, "Uint32Array")?;
+        js.add_object(global, "Float32Array")?;
+        js.add_object(global, "Float64Array")?;
+        js.add_object(global, "process")?;
+        js.add_object(global, "net_listener")?;
 
-        let date = js.add_object(global, "Date");
+        let date = js.add_object(global, "Date")?;
         // this would be a function on a new Date() but we'll just make it a
         // function on the global object to avoid allocating a item
-        js.add_object(date, "getTimezoneOffset");
+        js.add_object(date, "getTimezoneOffset")?;
 
-        js
+        Ok(js)
     }
 }
 
@@ -291,7 +276,7 @@ mod tests {
 
     #[test]
     fn slab_get() {
-        let j = Js::new();
+        let j = Js::new().unwrap();
         match j.slab_get(0).unwrap() {
             Value::NaN => {}
             _ => {
@@ -302,12 +287,12 @@ mod tests {
 
     #[test]
     fn test_reflect_get() {
-        let j = Js::new();
+        let j = Js::new().unwrap();
         assert_eq!(9, j.reflect_get(5, "fs").unwrap().0);
     }
     #[test]
     fn test_reflect_set() {
-        let mut j = Js::new();
+        let mut j = Js::new().unwrap();
         j.reflect_set(7, "_pendingEvent", 2);
         assert_eq!(2, j.reflect_get(7, "_pendingEvent").unwrap().0);
         // println!("{:?}", MAX / 2);

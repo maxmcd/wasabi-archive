@@ -74,7 +74,7 @@ impl SharedState {
             net_callback_id: 0,
             next_callback_timeout_id: 1,
             pending_event_ref: 0,
-            js: js::Js::new(),
+            js: js::Js::new().unwrap(),
             call_queue: VecDeque::new(),
         }
     }
@@ -83,9 +83,9 @@ impl SharedState {
             name: "pending_event",
             values: HashMap::new(),
         });
-        self.js.add_object_value(pe, "id", (id, false));
-        self.js.add_object(pe, "this");
-        self.js.add_array(pe, "args", args);
+        self.js.add_object_value(pe, "id", (id, false)).unwrap();
+        self.js.add_object(pe, "this").unwrap();
+        self.js.add_array(pe, "args", args).unwrap();
         self.call_queue.push_back(pe);
     }
 }
@@ -199,8 +199,8 @@ trait ContextHelpers {
                     values: HashMap::new(),
                 });
                 // maybe don't create an object here?
-                js.add_object(wf, "this");
-                js.add_object_value(wf, "id", argument_list[0]);
+                js.add_object(wf, "this").unwrap();
+                js.add_object_value(wf, "id", argument_list[0]).unwrap();
                 Some((wf, true))
             }
             ("getRandomValues", "crypto") => {
@@ -233,11 +233,13 @@ trait ContextHelpers {
                     }
                 };
                 print!("{}", str::from_utf8(self._get_bytes(address, len)).unwrap());
-                self.js_mut().add_array(
-                    argument_list[5].0,
-                    "args",
-                    vec![(2, true), argument_list[3]],
-                );
+                self.js_mut()
+                    .add_array(
+                        argument_list[5].0,
+                        "args",
+                        vec![(2, true), argument_list[3]],
+                    )
+                    .unwrap();
                 self.shared_state_mut()
                     .call_queue
                     .push_back(argument_list[5].0);
@@ -842,11 +844,14 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
 
         // Invoke an event by setting it as the this._pendingEvent
         if !shared_state.call_queue.is_empty() {
-            shared_state.js.add_object_value(
-                7,
-                "_pendingEvent",
-                (shared_state.call_queue.pop_front().unwrap(), true),
-            );
+            shared_state
+                .js
+                .add_object_value(
+                    7,
+                    "_pendingEvent",
+                    (shared_state.call_queue.pop_front().unwrap(), true),
+                )
+                .unwrap();
             continue;
         }
 

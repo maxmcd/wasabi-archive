@@ -936,6 +936,7 @@ dependencies = [
  "cranelift-entity 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-native 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-wasm 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "file-per-thread-logger 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.6.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",

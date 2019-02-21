@@ -30,6 +30,7 @@ extern crate cranelift_codegen;
 extern crate cranelift_entity;
 extern crate cranelift_native;
 extern crate cranelift_wasm;
+extern crate failure;
 extern crate file_per_thread_logger;
 extern crate mio;
 extern crate rand;
