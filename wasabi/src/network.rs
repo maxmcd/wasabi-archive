@@ -1,3 +1,4 @@
+use bytes;
 use mio;
 use mio::net;
 use slab::Slab;
@@ -41,6 +42,17 @@ pub fn event_to_ints(event: &mio::Event) -> ((i64, i64)) {
     (event.token().0 as i64, state)
 }
 
+pub fn addr_to_bytes(addr: SocketAddr, b: &mut [u8]) -> Result<()> {
+    match addr {
+        SocketAddr::V4(a) => {
+            b[0..4].copy_from_slice(&a.ip().octets());
+            b[4..6].copy_from_slice(&bytes::u16_as_u8_le(a.port()));
+            Ok(())
+        }
+        SocketAddr::V6(_) => Err(Error::new(ErrorKind::Other, "IPV6 not supported")),
+    }
+}
+
 impl NetLoop {
     pub fn new() -> Self {
         let poll = Arc::new(mio::Poll::new().unwrap());
@@ -65,7 +77,11 @@ impl NetLoop {
     fn process_event(&mut self, event: &mio::Event) {
         let unix_ready = mio::unix::UnixReady::from(event.readiness());
         if unix_ready.is_hup() {
-            self.slab.remove(event.token().0);
+            let token = event.token();
+            // might have already been closed and removed
+            if self.slab.contains(token.0) {
+                self.slab.remove(token.0);
+            };
             // this might be a little too aggressive
             // slab remove should drop any refernece to the Stream or Listener
             // but it's unclear if the id is still being used under the hood
@@ -73,25 +89,15 @@ impl NetLoop {
         };
     }
     pub fn try_recv(&mut self) -> result::Result<mio::Event, mpsc::TryRecvError> {
-        match self.event_receiver.try_recv() {
-            Ok(event) => {
-                self.process_event(&event);
-                Ok(event)
-            }
-            Err(err) => Err(err),
-        }
+        let event = self.event_receiver.try_recv()?;
+        self.process_event(&event);
+        Ok(event)
     }
     pub fn recv(&mut self) -> result::Result<mio::Event, mpsc::RecvError> {
-        match self.event_receiver.recv() {
-            Ok(event) => {
-                self.process_event(&event);
-                Ok(event)
-            }
-            Err(err) => Err(err),
-        }
+        let event = self.event_receiver.recv()?;
+        self.process_event(&event);
+        Ok(event)
     }
-
-    // fn register(&mut self, addr)
     pub fn tcp_listen(&mut self, addr: &SocketAddr) -> Result<usize> {
         let listener = net::TcpListener::bind(addr)?;
         let id = self.slab.insert(NetTcp::Listener(listener));
@@ -125,11 +131,25 @@ impl NetLoop {
         let (stream, _) = self.get_listener_ref(id)?.accept()?;
         self.register_stream(stream)
     }
+    pub fn local_addr(&self, i: usize) -> Result<SocketAddr> {
+        self.get_stream_ref(i)?.local_addr()
+    }
+    pub fn peer_addr(&self, i: usize) -> Result<SocketAddr> {
+        self.get_stream_ref(i)?.peer_addr()
+    }
     pub fn read_stream(&self, i: usize, b: &mut [u8]) -> Result<usize> {
         self.get_stream_ref(i)?.read(b)
     }
     pub fn write_stream(&self, i: usize, b: &[u8]) -> Result<usize> {
         self.get_stream_ref(i)?.write(b)
+    }
+    pub fn close_stream(&mut self, i: usize) -> Result<()> {
+        self.slab.remove(i); // value is dropped and connection is closed
+        Ok(())
+    }
+    pub fn close_listener(&mut self, i: usize) -> Result<()> {
+        self.slab.remove(i); // value is dropped and connection is closed
+        Ok(())
     }
     fn get_listener_ref(&self, i: usize) -> Result<&mio::net::TcpListener> {
         match match self.slab.get(i) {
@@ -160,6 +180,17 @@ impl NetLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_addr_to_bytes() {
+        let mut mem = vec![0u8; 6];
+        addr_to_bytes("1.2.3.4:100".parse().unwrap(), &mut mem).unwrap();
+        assert_eq!(mem, [1, 2, 3, 4, 100, 0]);
+
+        let mut mem = vec![0u8; 6];
+        addr_to_bytes("127.0.0.1:34254".parse().unwrap(), &mut mem).unwrap();
+        assert_eq!(bytes::as_u16_le(&mem[4..6]), 34254u16);
+    }
 
     #[test]
     fn listen_connect_read_write() {

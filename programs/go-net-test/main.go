@@ -12,7 +12,6 @@ import (
 
 func main() {
 	toRun := os.Args[1:]
-	fmt.Println(toRun)
 
 	cmd := exec.Command(toRun[0], toRun[1:]...)
 	cmd.Stderr = os.Stderr

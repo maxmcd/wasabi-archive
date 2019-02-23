@@ -4,14 +4,14 @@ use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
+use failure::{Error, Fail};
 use js;
 use network;
-use network::NetLoop;
+use network::{addr_to_bytes, NetLoop};
 use rand::{thread_rng, Rng};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::error::Error;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,7 +149,12 @@ trait ContextHelpers {
     fn js_mut(&mut self) -> &mut js::Js {
         &mut self.shared_state_mut().js
     }
-    fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
+    fn reflect_set(
+        &mut self,
+        target: i64,
+        property_key: &'static str,
+        value: i64,
+    ) -> Result<(), Error> {
         self.shared_state_mut()
             .js
             .reflect_set(target, property_key, value)
@@ -350,7 +355,7 @@ trait ContextHelpers {
         }
     }
 
-    fn set_error(&mut self, addr: i32, err: &Error) {
+    fn set_error(&mut self, addr: i32, err: &Fail) {
         self.store_string(addr, err.to_string())
     }
     fn store_value_bytes(&mut self, b: Vec<u8>) -> i32 {
@@ -427,13 +432,16 @@ extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
 }
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    // TODO check that return of load_value is actually a ref
     let target = fc.load_value(sp + 8).0;
     let property_key = fc.get_static_string(sp + 16);
     let value = fc.load_value(sp + 32).0;
-    fc.shared_state_mut()
+    if let Err(err) = fc
+        .shared_state_mut()
         .js
-        .reflect_set(target, property_key, value);
+        .reflect_set(target, property_key, value)
+    {
+        fc.set_error(sp, err.as_fail())
+    };
 }
 extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
@@ -597,6 +605,31 @@ extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     fc.set_usize_result(sp + 40, read);
 }
 
+extern "C" fn go_close_listener(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    // todo, pass error value
+
+    if let Err(err) = fc.shared_state_mut().net_loop.close_listener(id as usize) {
+        fc.set_error(sp + 16, &err);
+        fc.set_bool(sp + 16 + 4, false);
+    } else {
+        fc.set_bool(sp + 16 + 4, true);
+    }
+}
+
+extern "C" fn go_close_tcp_conn(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    // todo, pass error value
+    if let Err(err) = fc.shared_state_mut().net_loop.close_stream(id as usize) {
+        fc.set_error(sp + 16, &err);
+        fc.set_bool(sp + 16 + 4, false);
+    } else {
+        fc.set_bool(sp + 16 + 4, true);
+    }
+}
+
 extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let addr = fc.get_string(sp + 8).to_owned();
@@ -611,13 +644,35 @@ extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
                     IpAddr::V6(_) => {} //no IPV6 support
                 }
             }
-            fc.set_byte_array_array(sp + 24, byte_ips)
+            fc.set_byte_array_array(sp + 24, byte_ips);
         }
         Err(err) => {
+            fc.set_error(sp + 24, &err);
             fc.set_bool(sp + 24 + 4, false);
-            fc.set_error(sp + 24, &err)
         }
     }
+}
+
+extern "C" fn go_local_addr(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let start = fc.get_i32(sp + 16);
+    let end = fc.get_i32(sp + 24) + start;
+    let (addr, len) = fc.mem();
+    let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
+    let addr = fc.shared_state().net_loop.local_addr(id as usize).unwrap();
+    addr_to_bytes(addr, mem).unwrap();
+}
+
+extern "C" fn go_remote_addr(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let start = fc.get_i32(sp + 16);
+    let end = fc.get_i32(sp + 24) + start;
+    let (addr, len) = fc.mem();
+    let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
+    let addr = fc.shared_state().net_loop.peer_addr(id as usize).unwrap();
+    addr_to_bytes(addr, mem).unwrap();
 }
 
 fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
@@ -637,11 +692,15 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.closeListener", go_close_listener as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.localAddr", go_local_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/pkg/net.closeConn", go_close_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/pkg/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
         ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
@@ -964,7 +1023,6 @@ mod tests {
             mem: Box::new(mem),
         };
         let mut tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
-        println!("{:?}", tc.mem_slice(0, 0));
         tc.set_i32(0, 2147483647);
         assert_eq!(2147483647, tc.get_i32(0));
         tc.set_i32(0, -2147483647);

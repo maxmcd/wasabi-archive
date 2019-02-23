@@ -151,8 +151,8 @@ impl Js {
                     len: argument_list[2].0,
                 }),
                 true,
-            )), //Uint8Array
-            "Date" => Some((target, true)), //Date
+            )),
+            "Date" => Some((target, true)),
             "net_listener" => {
                 let nl = self.slab_add(Value::Object {
                     name: "net_listener",
@@ -160,16 +160,23 @@ impl Js {
                 });
                 self.add_object(nl, "register").unwrap();
                 Some((nl, true))
-            } //net_listener
+            }
             _ => None,
         }
     }
-    pub fn reflect_set(&mut self, target: i64, property_key: &'static str, value: i64) {
+    pub fn reflect_set(
+        &mut self,
+        target: i64,
+        property_key: &'static str,
+        value: i64,
+    ) -> Result<(), Error> {
         if let Some(o) = self.slab.get_mut(target as usize) {
             if let Value::Object { values, .. } = o {
                 values.insert(property_key, (value, true));
+                return Ok(());
             }
-        }
+        };
+        Err(err_msg("reflect_set target or property_key doesn't exist"))
     }
     pub fn new() -> Result<Self, Error> {
         let mut js = Self {
@@ -293,7 +300,7 @@ mod tests {
     #[test]
     fn test_reflect_set() {
         let mut j = Js::new().unwrap();
-        j.reflect_set(7, "_pendingEvent", 2);
+        j.reflect_set(7, "_pendingEvent", 2).unwrap();
         assert_eq!(2, j.reflect_get(7, "_pendingEvent").unwrap().0);
         // println!("{:?}", MAX / 2);
     }

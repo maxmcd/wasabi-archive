@@ -46,3 +46,11 @@ pub fn u32_as_u8_le(x: u32) -> [u8; 4] {
         ((x >> 24) & 0xff) as u8,
     ]
 }
+
+pub fn u16_as_u8_le(x: u16) -> [u8; 2] {
+    [(x & 0xff) as u8, ((x >> 8) & 0xff) as u8]
+}
+
+pub fn as_u16_le(array: &[u8]) -> u16 {
+    u16::from(array[0]) | (u16::from(array[1]) << 8)
+}

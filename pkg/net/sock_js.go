@@ -3,7 +3,6 @@ package net
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -131,6 +130,17 @@ func (l *Listener) Accept() (c Conn, err error) {
 	return
 }
 
+func closeListener(id int32) (int32, bool)
+
+func (l *Listener) Close() error {
+	ref, ok := closeListener(l.token)
+	if ok {
+		return nil
+	}
+	bytes, _ := wasm.GetBytes(ref)
+	return errors.New(string(bytes))
+}
+
 type Conn struct {
 	token int32
 }
@@ -175,23 +185,37 @@ func (c *Conn) Write(b []byte) (ln int, err error) {
 	}
 }
 
+func closeConn(id int32) (int32, bool)
+
 func (c *Conn) Close() error {
-	return nil
+	ref, ok := closeConn(c.token)
+	if ok {
+		return nil
+	}
+	bytes, _ := wasm.GetBytes(ref)
+	return errors.New(string(bytes))
 }
 
+func localAddr(id int32, b []byte)
+
 func (c *Conn) LocalAddr() net.Addr {
-	// TODO: fix
+	b := make([]byte, 6)
+	localAddr(c.token, b)
 	return &net.TCPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: 8668,
+		IP:   net.IPv4(b[0], b[1], b[2], b[3]),
+		Port: int(uint16(b[4]) | uint16(b[5])<<8),
 		Zone: "",
 	}
 }
+
+func remoteAddr(id int32, b []byte)
+
 func (c *Conn) RemoteAddr() net.Addr {
-	// TODO: fix
+	b := make([]byte, 6)
+	remoteAddr(c.token, b)
 	return &net.TCPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: 8668,
+		IP:   net.IPv4(b[0], b[1], b[2], b[3]),
+		Port: int(uint16(b[4]) | uint16(b[5])<<8),
 		Zone: "",
 	}
 }
@@ -211,7 +235,6 @@ func ListenTcp(addr string) (Listener, error) {
 	id, ok := listenTcp(addr)
 	if ok {
 		connections[id] = newEventState()
-		fmt.Printf("%#v\n", connections)
 		return Listener{token: id}, nil
 	}
 	bytes, _ := wasm.GetBytes(id) // id is ref if there's an error
