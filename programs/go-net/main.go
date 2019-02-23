@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -11,21 +12,21 @@ import (
 
 func main() {
 	// listenAndServe()
-	dialAndHostAndConnect()
-	tcpDial()
-	// httpRequest()
+	// dialAndHostAndConnect()
+	// tcpDial()
+	// httpRequest("http://www.google.com/")
 	tcpHTTPServer()
-
+	// serverListen()
 }
 
 func tcpDial() {
 	fmt.Println(wnet.Dial("tcp", "127.0.0.1:80"))
 }
 
-func httpRequest() {
+func httpRequest(url string) {
 	client := http.Client{Transport: &wnet.RoundTripper{}}
 
-	req, err := http.NewRequest("GET", "http://www.google.com/", nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -142,4 +143,21 @@ func listenAndServe() {
 	})
 	fmt.Println("listening on :8080")
 	wnet.ListenAndServe("127.0.0.1:8080", handler)
+}
+
+func serverListen() {
+	go func() {
+		start := time.Now()
+		for i := 0; i < 1000; i++ {
+			httpRequest("http://localhost:8080/")
+		}
+		fmt.Println(time.Now().Sub(start) / 1000)
+	}()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Printf("%s %s %s\n", r.Method, r.URL.String(), time.Now())
+		w.Write([]byte("Hello World"))
+	})
+	fmt.Println("listening on :8080")
+	log.Fatal(wnet.ListenAndServe("127.0.0.1:8080", handler))
 }

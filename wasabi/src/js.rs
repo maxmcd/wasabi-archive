@@ -79,7 +79,6 @@ impl Js {
         None
     }
     pub fn add_object(&mut self, r: i64, name: &'static str) -> Result<i64, Error> {
-        self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Object {
             name,
             values: HashMap::new(),
@@ -93,7 +92,6 @@ impl Js {
         name: &'static str,
         args: Vec<(i64, bool)>,
     ) -> Result<i64, Error> {
-        self.static_strings.insert(name, name);
         let new_r = self.slab.insert(Value::Array(args)) as i64;
         self.add_object_value(r, name, (new_r, true))?;
         Ok(new_r)
@@ -222,8 +220,9 @@ impl Js {
         let crypto = js.add_object(global, "crypto")?;
         js.add_object(crypto, "getRandomValues")?;
 
-        let pe = js.add_object(this, "_pendingEvent")?;
-        js.add_object_value(pe, "result", (2, true))?;
+        // let pe = js.add_object(this, "_pendingEvent")?;
+        js.add_object_value(this, "_pendingEvent", (2, true))?;
+        // js.add_object_value(pe, "result", (2, true))?;
         js.add_object(this, "_makeFuncWrapper")?;
 
         js.add_object(global, "Object")?;

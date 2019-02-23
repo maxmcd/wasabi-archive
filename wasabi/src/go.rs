@@ -30,6 +30,15 @@ struct Callback {
     id: i32,
 }
 
+impl Callback {
+    fn time_until_called(&self) -> time::Duration {
+        time::Duration::from_nanos((self.time - epoch_ns()).abs() as u64)
+    }
+    fn sleep_until_called(&self) {
+        thread::sleep(self.time_until_called());
+    }
+}
+
 impl Ord for Callback {
     fn cmp(&self, other: &Self) -> Ordering {
         self.time.cmp(&other.time)
@@ -55,9 +64,9 @@ struct SharedState {
     poll: mio::Poll,
     net_loop: NetLoop,
     net_callback_id: i64,
-    next_callback_timeout_id: i32,
-    callback_heap: BinaryHeap<Callback>,
-    callback_map: HashMap<i32, bool>,
+    next_timeout_id: i32,
+    timeout_heap: BinaryHeap<Callback>,
+    timeout_map: HashMap<i32, bool>,
     call_queue: VecDeque<i64>,
     js: js::Js,
 }
@@ -65,28 +74,130 @@ struct SharedState {
 impl SharedState {
     fn new() -> Self {
         Self {
-            callback_heap: BinaryHeap::new(),
-            callback_map: HashMap::new(),
+            timeout_heap: BinaryHeap::new(),
+            timeout_map: HashMap::new(),
             definition: None,
             exited: false,
             poll: mio::Poll::new().unwrap(),
             net_loop: NetLoop::new(),
             net_callback_id: 0,
-            next_callback_timeout_id: 1,
+            next_timeout_id: 1,
             pending_event_ref: 0,
             js: js::Js::new().unwrap(),
             call_queue: VecDeque::new(),
         }
     }
+    fn recv_net_events(&mut self) -> Option<Vec<mio::event::Event>> {
+        let mut events = Vec::new();
+
+        // If there's nothing at all to be called, wait for network events
+        if self.call_queue.is_empty() && self.timeout_heap.is_empty() {
+            events.push(self.net_loop.recv().unwrap());
+
+        // If the timeout heap has candidates only wait on the recv until
+        // the next timeout
+        } else if self.call_queue.is_empty() && !self.timeout_heap.is_empty() {
+            if let Ok(event) = self
+                .net_loop
+                .recv_timeout(self.timeout_heap.peek().unwrap().time_until_called())
+            {
+                events.push(event)
+            }
+        }
+
+        // Run a try_recv loop to drain events regardless of how we got here
+        while let Ok(event) = self.net_loop.try_recv() {
+            events.push(event)
+        }
+
+        if events.is_empty() {
+            None
+        } else {
+            Some(events)
+        }
+    }
+    fn check_expired_timeouts(&mut self) -> bool {
+        let mut should_return = false;
+        if let Some(callback) = self.timeout_heap.peek() {
+            if callback.time < epoch_ns() {
+                should_return = true;
+            }
+        }
+        if should_return {
+            self.timeout_heap.pop();
+            should_return
+        } else {
+            should_return
+        }
+    }
     fn add_pending_event(&mut self, id: i64, args: Vec<(i64, bool)>) {
+        // TODO: return result
         let pe = self.js.slab_add(js::Value::Object {
             name: "pending_event",
             values: HashMap::new(),
         });
         self.js.add_object_value(pe, "id", (id, false)).unwrap();
+        self.js.add_object_value(pe, "result", (2, true)).unwrap();
         self.js.add_object(pe, "this").unwrap();
         self.js.add_array(pe, "args", args).unwrap();
         self.call_queue.push_back(pe);
+    }
+
+    fn process_event_loop(&mut self) -> Result<bool, Error> {
+        // Stop execution if we've exited
+        if self.exited {
+            return Ok(true);
+        }
+
+        // Check for events if we have an active listener
+        if self.net_loop.is_listening {
+            if let Some(events) = self.recv_net_events() {
+                let mut network_cb_args = Vec::new();
+                for event in &events {
+                    let ints = network::event_to_ints(event);
+                    network_cb_args.push((ints.0, false));
+                    network_cb_args.push((ints.1, false));
+                }
+                // Add the network callback to the call stack
+                let ncbid = self.net_callback_id;
+                self.add_pending_event(ncbid, network_cb_args);
+            }
+        }
+
+        // Check if any timeouts have expired.
+        if self.check_expired_timeouts() {
+            return Ok(false);
+        }
+
+        // Invoke an event by setting it as the this._pendingEvent
+        if !self.call_queue.is_empty() {
+            self.js
+                .add_object_value(
+                    7,
+                    "_pendingEvent",
+                    (self.call_queue.pop_front().unwrap(), true),
+                )
+                .unwrap();
+            return Ok(false);
+        }
+
+        // See if we can wait for a callback
+        if let Some(callback) = self.timeout_heap.pop() {
+            callback.sleep_until_called();
+            return Ok(false);
+        }
+
+        // If we get this far we've run out of things to do, but the program
+        // hasn't exited normally. Set pending event to 0 to trigger a stack
+        // dump and exit
+        if !self.exited {
+            self.exited = true;
+            // TODO: fix this it doesn't run as expected
+            self.add_pending_event(0, Vec::new());
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 }
 
@@ -245,6 +356,9 @@ trait ContextHelpers {
                         vec![(2, true), argument_list[3]],
                     )
                     .unwrap();
+                self.js_mut()
+                    .add_object_value(argument_list[5].0, "result", (2, true))
+                    .unwrap();
                 self.shared_state_mut()
                     .call_queue
                     .push_back(argument_list[5].0);
@@ -398,19 +512,19 @@ extern "C" fn go_debug(_sp: i32) {
 extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let count = fc.get_i64(sp + 8);
-    let id = fc.shared_state().next_callback_timeout_id;
+    let id = fc.shared_state().next_timeout_id;
     fc.set_i32(sp + 16, id);
-    fc.shared_state_mut().next_callback_timeout_id += 1;
-    fc.shared_state_mut().callback_heap.push(Callback {
+    fc.shared_state_mut().next_timeout_id += 1;
+    fc.shared_state_mut().timeout_heap.push(Callback {
         time: epoch_ns() + count * 1_000_000,
         id,
     });
-    fc.shared_state_mut().callback_map.insert(id, true);
+    fc.shared_state_mut().timeout_map.insert(id, true);
 }
 extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
-    fc.shared_state_mut().callback_map.remove(&id);
+    fc.shared_state_mut().timeout_map.remove(&id);
 }
 extern "C" fn go_syscall(_sp: i32) {
     println!("go_syscall")
@@ -869,76 +983,10 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
             .downcast_mut::<SharedState>()
             .expect("host state is not a SharedState");
 
-        // Stop execution if we've exited
-        if shared_state.exited {
+        let should_break = shared_state.process_event_loop().unwrap();
+        if should_break {
             break;
         }
-
-        // Check for events if we have an active listener
-        if shared_state.net_loop.is_listening {
-            let mut events = Vec::new();
-
-            // If there's nothing to be called, wait for network events
-            if shared_state.call_queue.is_empty() {
-                // block if there's nothing else to do
-                events.push(shared_state.net_loop.recv().unwrap());
-            }
-            // Regardless of the state of the call stack, try and fetch some
-            // events
-            while let Ok(event) = shared_state.net_loop.try_recv() {
-                events.push(event)
-            }
-            let mut network_cb_args = Vec::new();
-            for event in &events {
-                let ints = network::event_to_ints(event);
-                network_cb_args.push((ints.0, false));
-                network_cb_args.push((ints.1, false));
-            }
-            if !network_cb_args.is_empty() {
-                // Add the network callback to the call stack
-                let ncbid = shared_state.net_callback_id;
-                shared_state.add_pending_event(ncbid, network_cb_args);
-            }
-        }
-
-        // Invoke an event by setting it as the this._pendingEvent
-        if !shared_state.call_queue.is_empty() {
-            shared_state
-                .js
-                .add_object_value(
-                    7,
-                    "_pendingEvent",
-                    (shared_state.call_queue.pop_front().unwrap(), true),
-                )
-                .unwrap();
-            continue;
-        }
-
-        // If we have a setTimeout style call, sleep
-        // TODO: actually make this play nice with other loop behavior
-        // If the call_queue has items
-        if let Some(callback) = shared_state.callback_heap.pop() {
-            let sleep_time = time::Duration::from_nanos((callback.time - epoch_ns()) as u64);
-            thread::sleep(sleep_time);
-            continue;
-        }
-
-        // If we have things to call let the program continue for another loop
-        if !shared_state.call_queue.is_empty() {
-            continue;
-        }
-
-        // If we get this far we've run out of things to do, but the program
-        // hasn't exited normally. Set pending event to 0 to trigger a stack
-        // dump and exit
-        if !shared_state.exited {
-            shared_state.exited = true;
-            // TODO: fix this it doesn't run as expected
-            shared_state.add_pending_event(0, Vec::new());
-            continue;
-        }
-
-        break;
     }
     println!("Invocation time: {:?}", invoke_timer.elapsed().unwrap());
 
@@ -1027,6 +1075,58 @@ mod tests {
         assert_eq!(2147483647, tc.get_i32(0));
         tc.set_i32(0, -2147483647);
         assert_eq!(-2147483647, tc.get_i32(0));
+    }
+
+    #[test]
+    fn test_event_loop_empty() {
+        let mut ss = SharedState::new();
+
+        // no events so the program adds a pending event with id 0
+        let should_break = ss.process_event_loop().unwrap();
+        assert_eq!(should_break, false);
+        assert_eq!(ss.call_queue.len(), 1);
+        let reference = ss.call_queue.pop_front().unwrap();
+
+        if let js::Value::Object { name, values } = ss.js.slab_get(reference).unwrap() {
+            assert_eq!(name, &"pending_event");
+            assert_eq!(values["id"].0, 0);
+        } else {
+            panic!("ref should be an object");
+        }
+
+        // now we're exited, so it should break
+        let should_break = ss.process_event_loop().unwrap();
+        assert_eq!(should_break, true);
+    }
+
+    #[test]
+    fn test_event_loop_only_callback() {
+        let mut ss = SharedState::new();
+        ss.net_loop.is_listening = true;
+
+        let ms = 0;
+        let id = 1;
+        ss.timeout_heap.push(Callback {
+            time: epoch_ns() + ms * 1_000_000,
+            id,
+        });
+
+        let should_break = ss.process_event_loop().unwrap();
+        assert_eq!(should_break, false);
+        assert!(ss.timeout_heap.is_empty());
+
+        let ms = 2;
+        let id = 1;
+        ss.timeout_heap.push(Callback {
+            time: epoch_ns() + ms * 1_000_000,
+            id,
+        });
+
+        let timeout_timer = SystemTime::now();
+        let should_break = ss.process_event_loop().unwrap();
+        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
+        assert_eq!(should_break, false);
+        assert!(ss.timeout_heap.is_empty());
     }
 
 }

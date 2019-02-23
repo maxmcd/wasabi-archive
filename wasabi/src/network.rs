@@ -8,6 +8,7 @@ use std::result;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time;
 
 #[derive(Debug)]
 enum NetTcp {
@@ -74,28 +75,19 @@ impl NetLoop {
             event_receiver,
         }
     }
-    fn process_event(&mut self, event: &mio::Event) {
-        let unix_ready = mio::unix::UnixReady::from(event.readiness());
-        if unix_ready.is_hup() {
-            let token = event.token();
-            // might have already been closed and removed
-            if self.slab.contains(token.0) {
-                self.slab.remove(token.0);
-            };
-            // this might be a little too aggressive
-            // slab remove should drop any refernece to the Stream or Listener
-            // but it's unclear if the id is still being used under the hood
-            // the next generated id is always the one most recently used...
-        };
-    }
     pub fn try_recv(&mut self) -> result::Result<mio::Event, mpsc::TryRecvError> {
         let event = self.event_receiver.try_recv()?;
-        self.process_event(&event);
         Ok(event)
     }
     pub fn recv(&mut self) -> result::Result<mio::Event, mpsc::RecvError> {
         let event = self.event_receiver.recv()?;
-        self.process_event(&event);
+        Ok(event)
+    }
+    pub fn recv_timeout(
+        &mut self,
+        timeout: time::Duration,
+    ) -> result::Result<mio::Event, mpsc::RecvTimeoutError> {
+        let event = self.event_receiver.recv_timeout(timeout)?;
         Ok(event)
     }
     pub fn tcp_listen(&mut self, addr: &SocketAddr) -> Result<usize> {
@@ -127,7 +119,9 @@ impl NetLoop {
         Ok(id)
     }
     pub fn tcp_accept(&mut self, id: usize) -> Result<usize> {
-        // TODO: handle connection metadata
+        if let Some(err) = self.get_listener_ref(id)?.take_error()? {
+            println!("accept error {:?}", err);
+        }
         let (stream, _) = self.get_listener_ref(id)?.accept()?;
         self.register_stream(stream)
     }
@@ -138,6 +132,9 @@ impl NetLoop {
         self.get_stream_ref(i)?.peer_addr()
     }
     pub fn read_stream(&self, i: usize, b: &mut [u8]) -> Result<usize> {
+        if let Some(err) = self.get_stream_ref(i)?.take_error()? {
+            println!("stream error {:?}", err);
+        }
         self.get_stream_ref(i)?.read(b)
     }
     pub fn write_stream(&self, i: usize, b: &[u8]) -> Result<usize> {

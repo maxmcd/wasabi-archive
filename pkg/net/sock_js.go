@@ -310,7 +310,17 @@ func Dial(network, addr string) (c net.Conn, err error) {
 	if network != "tcp" {
 		return c, errors.New("tcp is the only protocal supported")
 	}
-	ref, ok := dialTcp(addr)
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	addrs, err := LookupIPAddr(host)
+	if err != nil {
+		return
+	}
+	// this is very simplified. see func (d *Dialer) DialContext in Go src
+	ref, ok := dialTcp(addrs[0].String() + ":" + port)
 	if ok {
 		connections[ref] = newEventState()
 		if err := connections[ref].writewait(); err != nil {
@@ -320,7 +330,6 @@ func Dial(network, addr string) (c net.Conn, err error) {
 		c = &TCPConn{token: ref}
 		return c, nil
 	}
-
 	bytes, _ := wasm.GetBytes(ref)
 	return c, errors.New(string(bytes))
 }
