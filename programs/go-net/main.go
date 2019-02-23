@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"time"
 
 	wnet "github.com/maxmcd/wasabi/pkg/net"
 )
 
 func main() {
+	// listenAndServe()
 	dialAndHostAndConnect()
 	tcpDial()
 	// httpRequest()
 	tcpHTTPServer()
+
 }
 
 func tcpDial() {
@@ -69,18 +72,24 @@ func dialAndHostAndConnect() {
 		panic(err)
 	}
 
-	b := make([]byte, 4)
-	if _, err := lc.Read(b); err != nil {
+	b := make([]byte, 4096)
+	ln, err := lc.Read(b)
+	if err != nil {
 		panic(err)
 	}
-	if !bytes.Equal(b, ping) {
+	if ln != 4 {
+		panic("incorrect number of bytes read")
+	}
+	if !bytes.Equal(b[:ln], ping) {
 		panic("message not recieved")
 	}
+
 	if err := c.Close(); err != nil {
 		panic(err)
 	}
 	if err := lc.Close(); err != nil {
 		// we currently error here, as the other connection is closed
+		// should we do this? What does Go do?
 		fmt.Println(err)
 	}
 
@@ -124,4 +133,13 @@ wasabi`)); err != nil {
 		// 	panic(err)
 		// }
 	}
+}
+
+func listenAndServe() {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Printf("%s %s %s\n", r.Method, r.URL.String(), time.Now())
+		w.Write([]byte("Hello World"))
+	})
+	fmt.Println("listening on :8080")
+	wnet.ListenAndServe("127.0.0.1:8080", handler)
 }

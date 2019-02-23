@@ -3,9 +3,13 @@ package net
 
 import (
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"syscall/js"
 	"time"
 
@@ -96,21 +100,13 @@ func init() {
 	nlr.Call("register", callback)
 }
 
-type Resolver struct {
-	net.Resolver
-}
-
-// func ListenTCP(network string, laddr *net.TCPAddr) (*TCPListener, error) {
-
-// }
-
-type Listener struct {
+type TCPListener struct {
 	token int32
 }
 
 func acceptTcp(id int32) (int32, bool)
 
-func (l *Listener) Accept() (c Conn, err error) {
+func (l *TCPListener) accept() (c TCPConn, err error) {
 	for {
 		token, ok := acceptTcp(l.token)
 		if ok {
@@ -130,9 +126,19 @@ func (l *Listener) Accept() (c Conn, err error) {
 	return
 }
 
+func (l *TCPListener) Accept() (net.Conn, error) {
+	c, err := l.accept()
+	return c, err
+}
+
+func (l *TCPListener) AcceptTCP() (TCPConn, error) {
+	c, err := l.accept()
+	return c, err
+}
+
 func closeListener(id int32) (int32, bool)
 
-func (l *Listener) Close() error {
+func (l *TCPListener) Close() error {
 	ref, ok := closeListener(l.token)
 	if ok {
 		return nil
@@ -141,14 +147,22 @@ func (l *Listener) Close() error {
 	return errors.New(string(bytes))
 }
 
-type Conn struct {
+func (l *TCPListener) Addr() net.Addr {
+	// TODO: implement
+	return &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 8668,
+		Zone: "",
+	}
+}
+
+type TCPConn struct {
 	token int32
 }
 
 func readConn(id int32, b []byte) (int32, bool)
 
-func (c *Conn) Read(b []byte) (ln int, err error) {
-	// TODO EOF error?
+func (c TCPConn) Read(b []byte) (ln int, err error) {
 	for {
 		length, ok := readConn(c.token, b)
 		if ok {
@@ -168,7 +182,7 @@ func (c *Conn) Read(b []byte) (ln int, err error) {
 
 func writeConn(id int32, b []byte) (int32, bool)
 
-func (c *Conn) Write(b []byte) (ln int, err error) {
+func (c TCPConn) Write(b []byte) (ln int, err error) {
 	for {
 		length, ok := writeConn(c.token, b)
 		if ok {
@@ -187,7 +201,7 @@ func (c *Conn) Write(b []byte) (ln int, err error) {
 
 func closeConn(id int32) (int32, bool)
 
-func (c *Conn) Close() error {
+func (c TCPConn) Close() error {
 	ref, ok := closeConn(c.token)
 	if ok {
 		return nil
@@ -198,7 +212,7 @@ func (c *Conn) Close() error {
 
 func localAddr(id int32, b []byte)
 
-func (c *Conn) LocalAddr() net.Addr {
+func (c TCPConn) LocalAddr() net.Addr {
 	b := make([]byte, 6)
 	localAddr(c.token, b)
 	return &net.TCPAddr{
@@ -210,7 +224,7 @@ func (c *Conn) LocalAddr() net.Addr {
 
 func remoteAddr(id int32, b []byte)
 
-func (c *Conn) RemoteAddr() net.Addr {
+func (c TCPConn) RemoteAddr() net.Addr {
 	b := make([]byte, 6)
 	remoteAddr(c.token, b)
 	return &net.TCPAddr{
@@ -219,33 +233,74 @@ func (c *Conn) RemoteAddr() net.Addr {
 		Zone: "",
 	}
 }
-func (c *Conn) SetDeadline(t time.Time) error {
+func (c TCPConn) SetDeadline(t time.Time) error {
 	return nil
 }
-func (c *Conn) SetReadDeadline(t time.Time) error {
+func (c TCPConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
-func (c *Conn) SetWriteDeadline(t time.Time) error {
+func (c TCPConn) SetWriteDeadline(t time.Time) error {
 	return nil
+}
+
+func (c TCPConn) CloseRead() error {
+	return nil
+}
+func (c TCPConn) CloseWrite() error {
+	return nil
+}
+func (c TCPConn) File() (f *os.File, err error) {
+	return nil, nil
+}
+func (c TCPConn) ReadFrom(r io.Reader) (int64, error) {
+	return 0, nil
+}
+
+func (c TCPConn) SetKeepAlive(keepalive bool) error {
+	return nil
+}
+
+// SetKeepAlivePeriod sets period between keep alives.
+func (c TCPConn) SetKeepAlivePeriod(d time.Duration) error {
+	return nil
+}
+
+func (c TCPConn) SetLinger(sec int) error {
+	return nil
+}
+
+func (c TCPConn) SetNoDelay(noDelay bool) error {
+	return nil
+}
+
+func (c TCPConn) SetReadBuffer(bytes int) error {
+	return nil
+}
+
+func (c TCPConn) SetWriteBuffer(bytes int) error {
+	return nil
+}
+func (c TCPConn) SyscallConn() (syscall.RawConn, error) {
+	return nil, nil
 }
 
 func listenTcp(addr string) (int32, bool)
 
-func ListenTcp(addr string) (Listener, error) {
+func ListenTcp(addr string) (TCPListener, error) {
 	id, ok := listenTcp(addr)
 	if ok {
 		connections[id] = newEventState()
-		return Listener{token: id}, nil
+		return TCPListener{token: id}, nil
 	}
 	bytes, _ := wasm.GetBytes(id) // id is ref if there's an error
 	err := errors.New(string(bytes))
 	// TODO: don't just pass a negative number
-	return Listener{token: -1}, err
+	return TCPListener{token: -1}, err
 }
 
-// func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-// 	var c net.Conn
-// 	c = &Conn{token: -1}
+// func DialContext(ctx context.Context, network, addr string) (net.TCPConn, error) {
+// 	var c net.TCPConn
+// 	c = &TCPConn{token: -1}
 // 	return c, nil
 // }
 
@@ -262,10 +317,41 @@ func Dial(network, addr string) (c net.Conn, err error) {
 			return c, err
 		}
 		var c net.Conn
-		c = &Conn{token: ref}
+		c = &TCPConn{token: ref}
 		return c, nil
 	}
 
 	bytes, _ := wasm.GetBytes(ref)
 	return c, errors.New(string(bytes))
+}
+
+type tcpKeepAliveListener struct {
+	*TCPListener
+}
+
+func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
+	tc, err := ln.AcceptTCP()
+
+	if err != nil {
+		return nil, err
+	}
+	tc.SetKeepAlive(true)
+	tc.SetKeepAlivePeriod(3 * time.Minute)
+	return tc, nil
+}
+
+func ListenAndServe(addr string, handler http.Handler) error {
+	server := http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+	// TODO: allow shorthand address like ":8080"
+	if addr == "" {
+		addr = ":http"
+	}
+	ln, err := ListenTcp(addr)
+	if err != nil {
+		return err
+	}
+	return server.Serve(tcpKeepAliveListener{&ln})
 }

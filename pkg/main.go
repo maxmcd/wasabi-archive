@@ -41,8 +41,9 @@ func (c *TCPConn) LocalAddr() net.Addr {
 	return c.c.LocalAddr()
 }
 func (c *TCPConn) Read(b []byte) (int, error) {
-	fmt.Println("tcp conn Read")
-	return c.c.Read(b)
+	i, e := c.c.Read(b)
+	fmt.Println("tcp conn Read", len(b), i, e)
+	return i, e
 }
 func (c *TCPConn) ReadFrom(r io.Reader) (int64, error) {
 	fmt.Println("tcp conn ReadFrom")
@@ -89,7 +90,7 @@ func (c *TCPConn) SetReadBuffer(bytes int) error {
 // and any currently-blocked Read call.
 // A zero value for t means Read will not time out.
 func (c *TCPConn) SetReadDeadline(t time.Time) error {
-	fmt.Println("tcp conn SetReadDeadline")
+	fmt.Println("tcp conn SetReadDeadline", t)
 	return c.c.SetReadDeadline(t)
 }
 func (c *TCPConn) SetWriteBuffer(bytes int) error {

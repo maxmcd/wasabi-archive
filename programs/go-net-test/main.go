@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const REQUEST_COUNT = 1000
+
 func main() {
 	toRun := os.Args[1:]
 
@@ -40,20 +42,20 @@ func main() {
 	fmt.Println("started")
 	start := time.Now()
 	go func() {
-		for l := 0; l < 500; l++ {
+		for l := 0; l < REQUEST_COUNT; l++ {
 			_, err := http.Get("http://localhost:8482")
 			if err != nil {
 				panic(err)
 			}
 		}
 	}()
-	for l := 0; l < 500; l++ {
+	for l := 0; l < REQUEST_COUNT; l++ {
 		_, err := http.Get("http://localhost:8482")
 		if err != nil {
 			panic(err)
 		}
 	}
-	fmt.Println(time.Now().Sub(start) / 500)
+	fmt.Println(time.Now().Sub(start) / REQUEST_COUNT)
 
 	cmd.Process.Signal(os.Kill)
 }

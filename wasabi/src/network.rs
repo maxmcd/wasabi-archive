@@ -144,11 +144,15 @@ impl NetLoop {
         self.get_stream_ref(i)?.write(b)
     }
     pub fn close_stream(&mut self, i: usize) -> Result<()> {
-        self.slab.remove(i); // value is dropped and connection is closed
+        if self.slab.contains(i) {
+            self.slab.remove(i); // value is dropped and connection is closed
+        };
         Ok(())
     }
     pub fn close_listener(&mut self, i: usize) -> Result<()> {
-        self.slab.remove(i); // value is dropped and connection is closed
+        if self.slab.contains(i) {
+            self.slab.remove(i); // value is dropped and connection is closed
+        };
         Ok(())
     }
     fn get_listener_ref(&self, i: usize) -> Result<&mio::net::TcpListener> {
