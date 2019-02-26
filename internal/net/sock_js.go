@@ -13,7 +13,7 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/maxmcd/wasabi/pkg/wasm"
+	"github.com/maxmcd/wasabi/internal/wasm"
 )
 
 type eventState struct {
@@ -284,10 +284,10 @@ func (c TCPConn) SyscallConn() (syscall.RawConn, error) {
 	return nil, nil
 }
 
-func listenTcp(addr string) (int32, bool)
+func listenTCP(addr string) (int32, bool)
 
-func ListenTcp(addr string) (TCPListener, error) {
-	id, ok := listenTcp(addr)
+func ListenTCP(addr string) (TCPListener, error) {
+	id, ok := listenTCP(addr)
 	if ok {
 		connections[id] = newEventState()
 		return TCPListener{token: id}, nil
@@ -358,7 +358,7 @@ func ListenAndServe(addr string, handler http.Handler) error {
 	if addr == "" {
 		addr = ":http"
 	}
-	ln, err := ListenTcp(addr)
+	ln, err := ListenTCP(addr)
 	if err != nil {
 		return err
 	}

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net"
 
-	"github.com/maxmcd/wasabi/pkg/wasm"
+	"github.com/maxmcd/wasabi/internal/wasm"
 )
 
 func lookupIPAddr(host string) (int32, bool)

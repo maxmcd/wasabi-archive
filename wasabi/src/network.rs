@@ -182,6 +182,10 @@ impl NetLoop {
 mod tests {
     use super::*;
 
+    pub fn as_u16_le(array: &[u8]) -> u16 {
+        u16::from(array[0]) | (u16::from(array[1]) << 8)
+    }
+
     #[test]
     fn test_addr_to_bytes() {
         let mut mem = vec![0u8; 6];
@@ -190,7 +194,7 @@ mod tests {
 
         let mut mem = vec![0u8; 6];
         addr_to_bytes("127.0.0.1:34254".parse().unwrap(), &mut mem).unwrap();
-        assert_eq!(bytes::as_u16_le(&mem[4..6]), 34254u16);
+        assert_eq!(as_u16_le(&mem[4..6]), 34254u16);
     }
 
     #[test]

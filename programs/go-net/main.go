@@ -7,24 +7,24 @@ import (
 	"net/http"
 	"time"
 
-	wnet "github.com/maxmcd/wasabi/pkg/net"
+	"github.com/maxmcd/wasabi"
 )
 
 func main() {
 	// listenAndServe()
 	// dialAndHostAndConnect()
 	// tcpDial()
-	// httpRequest("http://www.google.com/")
+	httpRequest("http://www.google.com/")
 	tcpHTTPServer()
 	// serverListen()
 }
 
 func tcpDial() {
-	fmt.Println(wnet.Dial("tcp", "127.0.0.1:80"))
+	fmt.Println(wasabi.Dial("tcp", "127.0.0.1:80"))
 }
 
 func httpRequest(url string) {
-	client := http.Client{Transport: &wnet.RoundTripper{}}
+	client := http.Client{Transport: &wasabi.RoundTripper{}}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -35,13 +35,13 @@ func httpRequest(url string) {
 }
 
 func lookupIPAddr() {
-	addrs, err := wnet.LookupIPAddr("www")
+	addrs, err := wasabi.LookupIPAddr("www")
 	if err != nil {
 		fmt.Println(err)
 	}
 	fmt.Println(addrs)
 
-	addrs, err = wnet.LookupIPAddr("www.google.com")
+	addrs, err = wasabi.LookupIPAddr("www.google.com")
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -49,11 +49,11 @@ func lookupIPAddr() {
 }
 
 func dialAndHostAndConnect() {
-	l, err := wnet.ListenTcp("127.0.0.1:8482")
+	l, err := wasabi.ListenTCP("127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}
-	c, err := wnet.Dial("tcp", "127.0.0.1:8482")
+	c, err := wasabi.Dial("tcp", "127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}
@@ -101,14 +101,14 @@ func dialAndHostAndConnect() {
 }
 
 func tcpHTTPServer() {
-	_, err := wnet.ListenTcp("128.0.0:8080")
+	_, err := wasabi.ListenTCP("128.0.0:8080")
 	if err == nil {
 		panic("should have errored with invalid ip")
 	}
 	if err.Error() != "invalid IP address syntax" {
 		panic("incorrect error message")
 	}
-	l, err := wnet.ListenTcp("127.0.0.1:8482")
+	l, err := wasabi.ListenTCP("127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}
@@ -142,7 +142,7 @@ func listenAndServe() {
 		w.Write([]byte("Hello World"))
 	})
 	fmt.Println("listening on :8080")
-	wnet.ListenAndServe("127.0.0.1:8080", handler)
+	wasabi.ListenAndServe("127.0.0.1:8080", handler)
 }
 
 func serverListen() {
@@ -159,5 +159,5 @@ func serverListen() {
 		w.Write([]byte("Hello World"))
 	})
 	fmt.Println("listening on :8080")
-	log.Fatal(wnet.ListenAndServe("127.0.0.1:8080", handler))
+	log.Fatal(wasabi.ListenAndServe("127.0.0.1:8080", handler))
 }

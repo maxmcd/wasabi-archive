@@ -82,7 +82,7 @@ fn main() {
     // flag_builder.set("opt_level", "best").unwrap();
 
     let isa = isa_builder.finish(settings::Flags::new(flag_builder));
-    let mut compiler = Compiler::new(isa);
+    let compiler = Compiler::new(isa);
     let args: Vec<String> = args().collect();
     if args.len() < 2 {
         println!("Runtime expects a wasm binary or wat file as the first argument");
@@ -91,7 +91,7 @@ fn main() {
     let filename = args[1].clone();
 
     let path = Path::new(&filename);
-    match handle_module(args, &mut compiler, path) {
+    match handle_module(args, compiler, path) {
         Ok(()) => {}
         Err(message) => {
             let name = path.as_os_str().to_string_lossy();
@@ -101,7 +101,7 @@ fn main() {
     }
 }
 
-fn handle_module(args: Vec<String>, compiler: &mut Compiler, path: &Path) -> Result<(), String> {
+fn handle_module(args: Vec<String>, compiler: Compiler, path: &Path) -> Result<(), String> {
     let mut data =
         read_to_end(path.to_path_buf()).map_err(|err| String::from(err.description()))?;
     // if data is using wat-format, first convert data to wasm

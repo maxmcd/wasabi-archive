@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+type TCPConn struct {
+	c *net.TCPConn
+}
+
 type TcpListener struct {
 	net.Listener
 }

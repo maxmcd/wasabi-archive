@@ -1,6 +1,6 @@
 #include "textflag.h"
 
-TEXT ·listenTcp(SB), NOSPLIT, $0
+TEXT ·listenTCP(SB), NOSPLIT, $0
     CallImport
     RET
 

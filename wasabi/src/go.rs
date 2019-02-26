@@ -19,10 +19,8 @@ use std::{io, slice, str, thread, time};
 use target_lexicon::HOST;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
-use wasmtime_jit::{
-    instantiate, ActionOutcome, Compiler, InstantiationError, Namespace, RuntimeValue,
-};
-use wasmtime_runtime::{Imports, Instance, VMContext, VMFunctionBody, VMMemoryDefinition};
+use wasmtime_jit::{ActionOutcome, Compiler, Context, InstantiationError, RuntimeValue};
+use wasmtime_runtime::{Imports, InstanceHandle, VMContext, VMFunctionBody, VMMemoryDefinition};
 
 #[derive(Debug, Eq)]
 struct Callback {
@@ -193,6 +191,7 @@ impl SharedState {
         if !self.exited {
             self.exited = true;
             // TODO: fix this it doesn't run as expected
+            // TODO: seems to run as expected... write a test
             self.add_pending_event(0, Vec::new());
             return Ok(false);
         }
@@ -281,6 +280,7 @@ trait ContextHelpers {
     fn value_length(&self, target: i64) -> Option<i64> {
         self.shared_state().js.value_length(target)
     }
+    // TODO: return Result
     fn reflect_apply(
         &mut self,
         target: i64,
@@ -795,7 +795,7 @@ fn resolve_host(host: &str) -> Result<Vec<IpAddr>, std::io::Error> {
         .map(|iter| iter.map(|socket_address| socket_address.ip()).collect())
 }
 
-pub fn instantiate_go() -> Result<Instance, InstantiationError> {
+pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
     let mut module = Module::new();
     let mut finished_functions: PrimaryMap<DefinedFuncIndex, *const VMFunctionBody> =
         PrimaryMap::new();
@@ -805,18 +805,18 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     #[rustfmt::skip]
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.closeListener", go_close_listener as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.listenTcp", go_listen_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.localAddr", go_local_addr as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/net.closeConn", go_close_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/pkg/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
+        ("github.com/maxmcd/wasabi/internal/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.closeListener", go_close_listener as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.listenTCP", go_listen_tcp as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.localAddr", go_local_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.closeConn", go_close_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
         ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
         ("runtime.getRandomData", go_get_random_data as *const VMFunctionBody),
         ("runtime.nanotime", go_nanotime as *const VMFunctionBody),
@@ -876,7 +876,7 @@ pub fn instantiate_go() -> Result<Instance, InstantiationError> {
     let data_initializers = Vec::new();
     let signatures = PrimaryMap::new();
 
-    Instance::new(
+    InstanceHandle::new(
         Rc::new(module),
         Rc::new(RefCell::new(HashMap::new())),
         finished_functions.into_boxed_slice(),
@@ -923,16 +923,16 @@ fn load_args_from_definition(args: Vec<String>, definition: *mut VMMemoryDefinit
     load_args_from_mem(args, &mut mem)
 }
 
-pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<(), String> {
-    let mut c = Box::new(compiler);
-    let mut namespace = Namespace::new();
+pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), String> {
+    let c = Box::new(compiler);
+    let mut context = Context::new(c);
     let instance = instantiate_go().expect("Instantiate go");
-    let go_index = namespace.instance(Some("go".to_string()), instance);
+    context.name_instance("go".to_string(), instance);
 
     let instantiate_timer = SystemTime::now();
-    let global_exports = Rc::new(RefCell::new(HashMap::new()));
-    let mut instance =
-        instantiate(&mut *c, &data, &mut namespace, global_exports).map_err(|e| e.to_string())?;
+    let mut instance = context
+        .instantiate_module(Some("main".to_string()), &data)
+        .map_err(|e| e.to_string())?;
     println!(
         "Instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
@@ -948,9 +948,8 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         None => panic!("no memory export found"),
     };
 
-    let index = namespace.instance(Some("main".to_string()), instance);
     {
-        let instance = &mut namespace.instances[go_index];
+        let instance = &mut context.get_instance(&"go").unwrap();
         let host_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
@@ -963,8 +962,8 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
     let mut args = vec![RuntimeValue::I32(argc), RuntimeValue::I32(argv)];
     let invoke_timer = SystemTime::now();
     loop {
-        match namespace
-            .invoke(&mut *c, index, function_name, &args)
+        match context
+            .invoke_named("main", function_name, &args)
             .map_err(|e| e.to_string())?
         {
             ActionOutcome::Returned { .. } => {}
@@ -977,7 +976,7 @@ pub fn run(args: Vec<String>, compiler: &mut Compiler, data: Vec<u8>) -> Result<
         }
         function_name = "resume";
         args = vec![];
-        let instance = &mut namespace.instances[go_index];
+        let instance = &mut context.get_instance(&"go").unwrap();
         let shared_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
