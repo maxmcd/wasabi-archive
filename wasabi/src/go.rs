@@ -12,6 +12,7 @@ use rand::{thread_rng, Rng};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::net;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -140,7 +141,6 @@ impl SharedState {
         self.js.add_array(pe, "args", args).unwrap();
         self.call_queue.push_back(pe);
     }
-
     fn process_event_loop(&mut self) -> Result<bool, Error> {
         // Stop execution if we've exited
         if self.exited {
@@ -694,6 +694,27 @@ extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
     }
 }
 
+extern "C" fn go_shutdown_tcp_conn(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    let how = fc.get_i32(sp + 8 + 4);
+    // 1 read
+    // 2 write
+    // 3 both
+    let sd = match how {
+        1 => net::Shutdown::Read,
+        2 => net::Shutdown::Write,
+        3 => net::Shutdown::Both,
+        _ => panic!("Incorrect value for shutdown {:?}", how),
+    };
+    if let Err(err) = fc.shared_state_mut().net_loop.shutdown(id as usize, sd) {
+        fc.set_error(sp + 16, &err);
+        fc.set_bool(sp + 16 + 4, false)
+    } else {
+        fc.set_bool(sp + 16 + 4, true)
+    }
+}
+
 extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -706,6 +727,27 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     fc.set_usize_result(sp + 40, written);
 }
 
+extern "C" fn go_net_get_error(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let id = fc.get_i32(sp + 8);
+    println!("get_error id {:?}", id);
+    match fc.shared_state_mut().net_loop.get_error(id as usize) {
+        Ok(e) => {
+            if let Some(e) = e {
+                println!("got error {:?}", e);
+                fc.set_error(sp + 16, &e);
+                fc.set_bool(sp + 16 + 4, true);
+            } else {
+                fc.set_bool(sp + 16 + 4, false);
+            }
+        }
+        Err(err) => {
+            fc.set_error(sp + 16, &err);
+            fc.set_bool(sp + 16 + 4, true);
+        }
+    }
+}
+
 extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -716,6 +758,7 @@ extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let (addr, len) = fc.mem();
     let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
     let read = fc.shared_state().net_loop.read_stream(id as usize, mem);
+    println!("read result {:?}", read);
     fc.set_usize_result(sp + 40, read);
 }
 
@@ -767,6 +810,17 @@ extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
     }
 }
 
+extern "C" fn go_lookup_port(vmctx: *mut VMContext, sp: i32) {
+    let fc = FuncContext::new(vmctx);
+    let network = fc.get_string(sp + 8).to_owned();
+    println!("{:?}", network);
+    let service = fc.get_string(sp + 8 + 16).to_owned();
+    println!("{:?}", service);
+    println!("{:?}", format!(":{}", service));
+    let addrs = "0.0.0.0:0".to_socket_addrs();
+    println!("{:?}", addrs);
+}
+
 extern "C" fn go_local_addr(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -808,11 +862,14 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("github.com/maxmcd/wasabi/internal/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.closeListener", go_close_listener as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.lookupIPAddr", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.lookupIP", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.lookupPort", go_lookup_port as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.listenTCP", go_listen_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.localAddr", go_local_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.shutdownConn", go_shutdown_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.getError", go_net_get_error as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.closeConn", go_close_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
@@ -838,6 +895,7 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("syscall/js.valuePrepareString", go_js_value_prepare_string as *const VMFunctionBody),
         ("syscall/js.valueSet", go_js_value_set as *const VMFunctionBody),
         ("syscall/js.valueSetIndex", go_js_value_set_index as *const VMFunctionBody),
+        ("syscall/js.valueInstanceOf", go_debug as *const VMFunctionBody),
         ("syscall/wasm.getRandomData", go_get_random_data as *const VMFunctionBody),
         ("syscall/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
         ("syscall/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody),

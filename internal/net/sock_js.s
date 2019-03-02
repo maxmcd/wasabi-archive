@@ -12,8 +12,15 @@ TEXT ·closeListener(SB), NOSPLIT, $0
     CallImport
     RET
 
-
 TEXT ·readConn(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·shutdownConn(SB), NOSPLIT, $0
+    CallImport
+    RET
+
+TEXT ·getError(SB), NOSPLIT, $0
     CallImport
     RET
 

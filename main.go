@@ -76,7 +76,7 @@ func (c TCPConn) SyscallConn() (syscall.RawConn, error) {
 
 // TCPListener ...
 type TCPListener struct {
-	tl wnet.TCPListener
+	tl *wnet.TCPListener
 }
 
 func (l *TCPListener) Close() error {
@@ -95,9 +95,14 @@ func (l *TCPListener) AcceptTCP() (net.Conn, error) {
 }
 
 // ListenTCP ...
-func ListenTCP(addr string) (TCPListener, error) {
-	l, err := wnet.ListenTCP(addr)
-	return TCPListener{tl: l}, err
+func ListenTCP(network string, laddr *net.TCPAddr) (*TCPListener, error) {
+	l, err := wnet.ListenTCP(network, laddr)
+	return &TCPListener{tl: l}, err
+}
+
+// ListenTCP ...
+func Listen(network, addr string) (net.Listener, error) {
+	return wnet.Listen(network, addr)
 }
 
 // Dial ...
@@ -110,9 +115,14 @@ func ListenAndServe(addr string, handler http.Handler) error {
 	return wnet.ListenAndServe(addr, handler)
 }
 
-// LookupIPAddr ...
-func LookupIPAddr(host string) (addrs []net.IPAddr, err error) {
-	return wnet.LookupIPAddr(host)
+// LookupIP ...
+func LookupIP(host string) (addrs []net.IP, err error) {
+	return wnet.LookupIP(host)
+}
+
+// LookupIP ...
+func LookupPort(network, service string) (int, error) {
+	return wnet.LookupPort(network, service)
 }
 
 //RoundTripper ...

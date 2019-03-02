@@ -4,17 +4,18 @@ package net
 
 import (
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/maxmcd/wasabi/internal/wasm"
 )
 
-func lookupIPAddr(host string) (int32, bool)
+func lookupIP(host string) (int32, bool)
 
-// LookupIPAddr looks up host using the local resolver. It returns a slice of
+// LookupIP looks up host using the local resolver. It returns a slice of
 // that host's IPv4 addresses.
-func LookupIPAddr(host string) (addrs []net.IPAddr, err error) {
-	ref, ok := lookupIPAddr(host)
+func LookupIP(host string) (addrs []net.IP, err error) {
+	ref, ok := lookupIP(host)
 	if !ok {
 		bytes, _ := wasm.GetBytes(ref)
 		err = errors.New(string(bytes))
@@ -24,13 +25,21 @@ func LookupIPAddr(host string) (addrs []net.IPAddr, err error) {
 	if err != nil {
 		return
 	}
-	addrs = make([]net.IPAddr, len(refs))
+	addrs = make([]net.IP, len(refs))
 	for i, ref := range refs {
 		val, err := wasm.GetBytes(ref)
 		if err != nil {
 			return nil, err
 		}
-		addrs[i] = net.IPAddr{IP: val}
+		addrs[i] = val
 	}
 	return
+}
+
+func lookupPort(network, service string) (int32, bool)
+
+func LookupPort(network, service string) (port int, err error) {
+	ref, ok := lookupPort(network, service)
+	fmt.Println(ref, ok)
+	return 0, nil
 }

@@ -3,6 +3,7 @@ use mio;
 use mio::net;
 use slab::Slab;
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::result;
 use std::sync::mpsc;
@@ -64,6 +65,7 @@ impl NetLoop {
             loop {
                 t_poll.poll(&mut events, None).unwrap();
                 for event in events.iter() {
+                    println!("Got new event {:?}", event);
                     event_sender.send(event).unwrap();
                 }
             }
@@ -125,8 +127,27 @@ impl NetLoop {
         let (stream, _) = self.get_listener_ref(id)?.accept()?;
         self.register_stream(stream)
     }
+    pub fn get_error(&mut self, id: usize) -> Result<Option<Error>> {
+        match self.slab.get(id) {
+            Some(ntcp) => match ntcp {
+                NetTcp::Listener(listener) => listener.take_error(),
+                NetTcp::Stream(stream) => stream.take_error(),
+            },
+            None => {
+                return Err(Error::new(ErrorKind::Other, "Listener not found for id"));
+            }
+        }
+    }
     pub fn local_addr(&self, i: usize) -> Result<SocketAddr> {
-        self.get_stream_ref(i)?.local_addr()
+        match self.slab.get(i) {
+            Some(ntcp) => match ntcp {
+                NetTcp::Listener(listener) => listener.local_addr(),
+                NetTcp::Stream(stream) => stream.local_addr(),
+            },
+            None => {
+                return Err(Error::new(ErrorKind::Other, "Not found for id"));
+            }
+        }
     }
     pub fn peer_addr(&self, i: usize) -> Result<SocketAddr> {
         self.get_stream_ref(i)?.peer_addr()
@@ -136,6 +157,9 @@ impl NetLoop {
             println!("stream error {:?}", err);
         }
         self.get_stream_ref(i)?.read(b)
+    }
+    pub fn shutdown(&mut self, i: usize, how: Shutdown) -> Result<()> {
+        self.get_stream_ref(i)?.shutdown(how)
     }
     pub fn write_stream(&self, i: usize, b: &[u8]) -> Result<usize> {
         self.get_stream_ref(i)?.write(b)

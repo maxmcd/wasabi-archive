@@ -14,9 +14,14 @@ func main() {
 	// listenAndServe()
 	// dialAndHostAndConnect()
 	// tcpDial()
-	httpRequest("http://www.google.com/")
-	tcpHTTPServer()
+	// httpRequest("http://www.google.com/")
+	// tcpHTTPServer()
 	// serverListen()
+	lookupPort()
+}
+
+func lookupPort() {
+	fmt.Println(wasabi.LookupPort("tcp", "0"))
 }
 
 func tcpDial() {
@@ -34,14 +39,14 @@ func httpRequest(url string) {
 	fmt.Println("Request response:", resp, err)
 }
 
-func lookupIPAddr() {
-	addrs, err := wasabi.LookupIPAddr("www")
+func lookupIP() {
+	addrs, err := wasabi.LookupIP("www")
 	if err != nil {
 		fmt.Println(err)
 	}
 	fmt.Println(addrs)
 
-	addrs, err = wasabi.LookupIPAddr("www.google.com")
+	addrs, err = wasabi.LookupIP("www.google.com")
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -49,7 +54,7 @@ func lookupIPAddr() {
 }
 
 func dialAndHostAndConnect() {
-	l, err := wasabi.ListenTCP("127.0.0.1:8482")
+	l, err := wasabi.Listen("tcp", "127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}
@@ -101,14 +106,14 @@ func dialAndHostAndConnect() {
 }
 
 func tcpHTTPServer() {
-	_, err := wasabi.ListenTCP("128.0.0:8080")
+	_, err := wasabi.Listen("tcp", "128.0.0:8080")
 	if err == nil {
 		panic("should have errored with invalid ip")
 	}
 	if err.Error() != "invalid IP address syntax" {
 		panic("incorrect error message")
 	}
-	l, err := wasabi.ListenTCP("127.0.0.1:8482")
+	l, err := wasabi.Listen("tcp", "127.0.0.1:8482")
 	if err != nil {
 		panic(err)
 	}

@@ -22,7 +22,7 @@ func main() {
 	}()
 	// testSetGetenv()
 	// testHTTP()
-	time.Sleep(time.Millisecond * 5)
+	// time.Sleep(time.Millisecond * 5)
 	//
 	fmt.Println("after sleep")
 
