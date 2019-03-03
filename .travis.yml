@@ -35,6 +35,7 @@ cache:
     - $CARGO_HOME/registry/cache/
 
 script:
+- cd ./internal/net && go1.12beta1 test
+- ./internal/net/test.sh
 - ./programs/go-lib-only/run.sh
-- ./programs/go-net-test/run.sh
 - cd wasabi && RUST_BACKTRACE=full cargo +nightly test --release -- --nocapture
