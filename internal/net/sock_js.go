@@ -4,7 +4,6 @@ package net
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -53,6 +52,12 @@ func (e *eventState) dead() bool {
 	return e.error() || e.hup()
 }
 
+func (e *eventState) wait() {
+	e.cond.L.Lock()
+	defer e.cond.L.Unlock()
+	e.cond.Wait()
+}
+
 func (e *eventState) writewait() error {
 	if e.writeable() {
 		return nil
@@ -87,7 +92,7 @@ func (e *eventState) readwait() error {
 			break
 		}
 		if e.readable() {
-			// remove writeable
+			// remove readable
 			e.state = e.state ^ (1 << 0)
 			break
 		}
@@ -176,7 +181,6 @@ func (l TCPListener) Close() error {
 }
 
 func (l TCPListener) Addr() net.Addr {
-	println("(l TCPListener) Addr() net.Addr {")
 	b := make([]byte, 6)
 	localAddr(l.token, b)
 	return &net.TCPAddr{
@@ -187,18 +191,20 @@ func (l TCPListener) Addr() net.Addr {
 }
 
 type TCPConn struct {
-	token        int32
-	es           *eventState
-	readDeadline time.Time
-	rDeadline    time.Time
-	wDeadline    time.Time
+	mu        sync.Mutex
+	token     int32
+	es        *eventState
+	rDeadline time.Time
+	wDeadline time.Time
 }
 
 func readConn(id int32, b []byte) (int32, bool)
 
-func (c TCPConn) Read(b []byte) (ln int, err error) {
+func (c *TCPConn) Read(b []byte) (ln int, err error) {
 	for {
-		fmt.Println("hi", c.token, c.es, c.es.hup())
+		if c.es.error() {
+			return 0, c.es.getError()
+		}
 		length, ok := readConn(c.token, b)
 		if ok {
 			if length == 0 && len(b) != 0 {
@@ -206,28 +212,42 @@ func (c TCPConn) Read(b []byte) (ln int, err error) {
 			}
 			return int(length), nil
 		}
+		if c.es.hup() {
+			return 0, io.EOF
+		}
 		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
 		err = errors.New(string(bytes))
+
+		// TODO: if "Network object not found in slab" error then the connection
+		// likely existed and was closed.
+
 		if !strings.Contains(err.Error(), "Resource temporarily unavailable (os error") {
 			return 0, err
+		} else {
+			if c.es.readable() {
+				// remove readable
+				c.es.state = c.es.state ^ (1 << 0)
+			}
 		}
 
-		if !c.readDeadline.IsZero() && c.readDeadline.Before(time.Now()) {
-			println("not it's this one")
-			return 0, nil
+		if !c.rDeadline.IsZero() {
+			d := time.Until(c.rDeadline)
+			if d <= 0 {
+				return 0, syscall.EAGAIN
+			}
+			time.AfterFunc(d, c.es.cond.Broadcast)
 		}
-
-		if err := connections[c.token].readwait(); err != nil {
-			return 0, err
+		if c.es.readable() {
+			continue
 		}
+		c.es.wait()
 	}
 	return
 }
 
 func writeConn(id int32, b []byte) (int32, bool)
 
-func (c TCPConn) Write(b []byte) (ln int, err error) {
-	println("Write(b []byte) (ln int, err error) {")
+func (c *TCPConn) Write(b []byte) (ln int, err error) {
 	for {
 		length, ok := writeConn(c.token, b)
 		if ok {
@@ -246,8 +266,7 @@ func (c TCPConn) Write(b []byte) (ln int, err error) {
 
 func closeConn(id int32) (int32, bool)
 
-func (c TCPConn) Close() error {
-	println("Close() error {")
+func (c *TCPConn) Close() error {
 	ref, ok := closeConn(c.token)
 	if ok {
 		return nil
@@ -258,8 +277,7 @@ func (c TCPConn) Close() error {
 
 func localAddr(id int32, b []byte)
 
-func (c TCPConn) LocalAddr() net.Addr {
-	println("LocalAddr() net.Addr {")
+func (c *TCPConn) LocalAddr() net.Addr {
 	b := make([]byte, 6)
 	localAddr(c.token, b)
 	return &net.TCPAddr{
@@ -271,8 +289,7 @@ func (c TCPConn) LocalAddr() net.Addr {
 
 func remoteAddr(id int32, b []byte)
 
-func (c TCPConn) RemoteAddr() net.Addr {
-	println("RemoteAddr() net.Addr {")
+func (c *TCPConn) RemoteAddr() net.Addr {
 	b := make([]byte, 6)
 	remoteAddr(c.token, b)
 	return &net.TCPAddr{
@@ -281,81 +298,68 @@ func (c TCPConn) RemoteAddr() net.Addr {
 		Zone: "",
 	}
 }
-func (c TCPConn) SetDeadline(t time.Time) error {
-	println("SetDeadline(t time.Time) error {")
+func (c *TCPConn) SetDeadline(t time.Time) error {
 	return nil
 }
-func (c TCPConn) SetReadDeadline(t time.Time) error {
-	c.readDeadline = t
-	fmt.Println(t)
+func (c *TCPConn) SetReadDeadline(t time.Time) error {
+	c.rDeadline = t
+	c.es.cond.Broadcast()
 	return nil
 }
-func (c TCPConn) SetWriteDeadline(t time.Time) error {
-	println("SetWriteDeadline(t time.Time) error {")
+func (c *TCPConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
 func shutdownConn(id int32, how int32) (int32, bool)
 
-func (c TCPConn) CloseRead() error {
+func (c *TCPConn) CloseRead() error {
 	ref, ok := shutdownConn(c.token, 1)
-	fmt.Println("ayoo", ref, ok)
 	if ok {
 		return nil
 	}
 	bytes, _ := wasm.GetBytes(ref)
 	return errors.New(string(bytes))
 }
-func (c TCPConn) CloseWrite() error {
+func (c *TCPConn) CloseWrite() error {
 	ref, ok := shutdownConn(c.token, 2)
-	fmt.Println("ayoo", ref, ok)
 	if ok {
 		return nil
 	}
 	bytes, _ := wasm.GetBytes(ref)
 	return errors.New(string(bytes))
 }
-func (c TCPConn) File() (f *os.File, err error) {
-	println("File() (f *os.File, err error) {")
+func (c *TCPConn) File() (f *os.File, err error) {
 	return nil, nil
 }
-func (c TCPConn) ReadFrom(r io.Reader) (int64, error) {
-	println("ReadFrom(r io.Reader) (int64, error) {")
+func (c *TCPConn) ReadFrom(r io.Reader) (int64, error) {
 	return 0, nil
 }
 
-func (c TCPConn) SetKeepAlive(keepalive bool) error {
-	println("SetKeepAlive(keepalive bool) error {")
+func (c *TCPConn) SetKeepAlive(keepalive bool) error {
 	return nil
 }
 
 // SetKeepAlivePeriod sets period between keep alives.
-func (c TCPConn) SetKeepAlivePeriod(d time.Duration) error {
-	fmt.Println("SetKeepAlivePeriod(d time.Duration) error {", d)
+func (c *TCPConn) SetKeepAlivePeriod(d time.Duration) error {
 	return nil
 }
 
-func (c TCPConn) SetLinger(sec int) error {
-	println("SetLinger(sec int) error {")
+func (c *TCPConn) SetLinger(sec int) error {
 	return nil
 }
 
-func (c TCPConn) SetNoDelay(noDelay bool) error {
-	println("SetNoDelay(noDelay bool) error {")
+func (c *TCPConn) SetNoDelay(noDelay bool) error {
 	return nil
 }
 
-func (c TCPConn) SetReadBuffer(bytes int) error {
-	println("SetReadBuffer(bytes int) error {")
+func (c *TCPConn) SetReadBuffer(bytes int) error {
 	return nil
 }
 
-func (c TCPConn) SetWriteBuffer(bytes int) error {
-	println("SetWriteBuffer(bytes int) error {")
+func (c *TCPConn) SetWriteBuffer(bytes int) error {
 	return nil
 }
-func (c TCPConn) SyscallConn() (syscall.RawConn, error) {
-	println("SyscallConn() (syscall.RawConn, error) {")
+func (c *TCPConn) SyscallConn() (syscall.RawConn, error) {
 	return nil, nil
 }
 

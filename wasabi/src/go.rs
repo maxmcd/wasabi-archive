@@ -730,11 +730,9 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_net_get_error(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
-    println!("get_error id {:?}", id);
     match fc.shared_state_mut().net_loop.get_error(id as usize) {
         Ok(e) => {
             if let Some(e) = e {
-                println!("got error {:?}", e);
                 fc.set_error(sp + 16, &e);
                 fc.set_bool(sp + 16 + 4, true);
             } else {
@@ -758,28 +756,15 @@ extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let (addr, len) = fc.mem();
     let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
     let read = fc.shared_state().net_loop.read_stream(id as usize, mem);
-    println!("read result {:?}", read);
     fc.set_usize_result(sp + 40, read);
 }
 
-extern "C" fn go_close_listener(vmctx: *mut VMContext, sp: i32) {
+extern "C" fn go_close_listener_or_conn(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     // todo, pass error value
 
-    if let Err(err) = fc.shared_state_mut().net_loop.close_listener(id as usize) {
-        fc.set_error(sp + 16, &err);
-        fc.set_bool(sp + 16 + 4, false);
-    } else {
-        fc.set_bool(sp + 16 + 4, true);
-    }
-}
-
-extern "C" fn go_close_tcp_conn(vmctx: *mut VMContext, sp: i32) {
-    let mut fc = FuncContext::new(vmctx);
-    let id = fc.get_i32(sp + 8);
-    // todo, pass error value
-    if let Err(err) = fc.shared_state_mut().net_loop.close_stream(id as usize) {
+    if let Err(err) = fc.shared_state_mut().net_loop.close(id as usize) {
         fc.set_error(sp + 16, &err);
         fc.set_bool(sp + 16 + 4, false);
     } else {
@@ -860,18 +845,18 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
     let functions = [
         ("debug", go_debug as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.acceptTcp", go_accept_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.closeListener", go_close_listener as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.closeConn", go_close_listener_or_conn as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.closeListener", go_close_listener_or_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.dialTcp", go_dial_tcp as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.lookupIP", go_lookup_ip_addr as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.lookupPort", go_lookup_port as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.getError", go_net_get_error as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.listenTCP", go_listen_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.localAddr", go_local_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.lookupIP", go_lookup_ip_addr as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.lookupPort", go_lookup_port as *const VMFunctionBody),
+        ("github.com/maxmcd/wasabi/internal/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.shutdownConn", go_shutdown_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.getError", go_net_get_error as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.writeConn", go_write_tcp_conn as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.closeConn", go_close_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody ),
         ("runtime.clearTimeoutEvent", go_clear_timeout_event as *const VMFunctionBody),
@@ -888,6 +873,7 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("syscall/js.valueCall", go_js_value_call as *const VMFunctionBody),
         ("syscall/js.valueGet", go_js_value_get as *const VMFunctionBody),
         ("syscall/js.valueIndex", go_js_value_index as *const VMFunctionBody),
+        ("syscall/js.valueInstanceOf", go_debug as *const VMFunctionBody),
         ("syscall/js.valueInvoke", go_js_value_invoke as *const VMFunctionBody),
         ("syscall/js.valueLength", go_js_value_length as *const VMFunctionBody),
         ("syscall/js.valueLoadString", go_js_value_load_string as *const VMFunctionBody),
@@ -895,7 +881,6 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("syscall/js.valuePrepareString", go_js_value_prepare_string as *const VMFunctionBody),
         ("syscall/js.valueSet", go_js_value_set as *const VMFunctionBody),
         ("syscall/js.valueSetIndex", go_js_value_set_index as *const VMFunctionBody),
-        ("syscall/js.valueInstanceOf", go_debug as *const VMFunctionBody),
         ("syscall/wasm.getRandomData", go_get_random_data as *const VMFunctionBody),
         ("syscall/wasm.loadBytes", go_load_bytes as *const VMFunctionBody),
         ("syscall/wasm.prepareBytes", go_prepare_bytes as *const VMFunctionBody),

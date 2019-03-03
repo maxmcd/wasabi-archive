@@ -2,9 +2,9 @@ set -Eeuxo pipefail
 
 cd "$(dirname ${BASH_SOURCE[0]})"
 
-cd ../../wasabi
+cd ../wasabi
 cargo +nightly build --release
 
-cd ../internal/net
+cd ..
 RUST_BACKTRACE=full GOOS=js GOARCH=wasm \
-    go1.12beta1 test -exec="../../wasabi/target/release/wasabi" -v
+    go1.12beta1 test -exec="./wasabi/target/release/wasabi" -v

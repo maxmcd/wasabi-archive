@@ -4,6 +4,11 @@ unset RUST_LOG
 
 cd "$(dirname ${BASH_SOURCE[0]})"
 
+cd ../../edgestack/superstellar/
+GOOS=js GOARCH=wasm go1.12beta1 build -o superstellar.wasm .
+
+cd ../../maxmcd/wasabi
+
 cd ./wasabi
 cargo +nightly build --release
 
