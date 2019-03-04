@@ -40,7 +40,8 @@ impl Callback {
 
 impl Ord for Callback {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.time.cmp(&other.time)
+        // min heap
+        self.time.cmp(&other.time).reverse()
     }
 }
 impl PartialOrd for Callback {
@@ -146,7 +147,6 @@ impl SharedState {
         if self.exited {
             return Ok(true);
         }
-
         // Check for events if we have an active listener
         if self.net_loop.is_listening {
             if let Some(events) = self.recv_net_events() {

@@ -2,6 +2,7 @@ package wasabi
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -214,6 +215,82 @@ func TestCloseWrite(t *testing.T) {
 
 }
 
+func TestListenerClose(t *testing.T) {
+	network := "tcp"
+
+	ln, err := newLocalListener(network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch network {
+	case "unix", "unixpacket":
+		defer os.Remove(ln.Addr().String())
+	}
+
+	dst := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		// if perr := parseCloseError(err, false); perr != nil {
+		// 	t.Error(perr)
+		// }
+		t.Fatal(err)
+	}
+	c, err := ln.Accept()
+	if err == nil {
+		c.Close()
+		t.Fatal("should fail")
+	}
+
+	if network == "tcp" {
+		// We will have two TCP FSMs inside the
+		// kernel here. There's no guarantee that a
+		// signal comes from the far end FSM will be
+		// delivered immediately to the near end FSM,
+		// especially on the platforms that allow
+		// multiple consumer threads to pull pending
+		// established connections at the same time by
+		// enabling SO_REUSEPORT option such as Linux,
+		// DragonFly BSD. So we need to give some time
+		// quantum to the kernel.
+		//
+		// Note that net.inet.tcp.reuseport_ext=1 by
+		// default on DragonFly BSD.
+		time.Sleep(time.Millisecond)
+
+		cc, err := Dial("tcp", dst)
+		if err == nil {
+			t.Error("Dial to closed TCP listener succeeded.")
+			cc.Close()
+		}
+	}
+}
+
+// Issue 24808: verify that ECONNRESET is not temporary for read.
+func TestNotTemporaryRead(t *testing.T) {
+	t.Parallel()
+	server := func(cs *TCPConn) error {
+		cs.SetLinger(0)
+		// Give the client time to get stuck in a Read.
+		time.Sleep(20 * time.Millisecond)
+		cs.Close()
+		return nil
+	}
+	client := func(ss *TCPConn) error {
+		_, err := ss.Read([]byte{0})
+		if err == nil {
+			return errors.New("Read succeeded unexpectedly")
+		} else if err == io.EOF {
+			// This happens on NaCl and Plan 9.
+			return nil
+		} else if ne, ok := err.(net.Error); !ok {
+			return fmt.Errorf("unexpected error %v", err)
+		} else if ne.Temporary() {
+			return fmt.Errorf("unexpected temporary error %v", err)
+		}
+		return nil
+	}
+	withTCPConnPair(t, client, server)
+}
+
 // Issue 17695: verify that a blocked Read is woken up by a Close.
 func TestCloseUnblocksRead(t *testing.T) {
 	t.Parallel()
@@ -228,6 +305,52 @@ func TestCloseUnblocksRead(t *testing.T) {
 		if n != 0 || err != io.EOF {
 			return fmt.Errorf("Read = %v, %v; want 0, EOF", n, err)
 		}
+		return nil
+	}
+	withTCPConnPair(t, client, server)
+}
+
+// Tests that a blocked Read is interrupted by a concurrent SetReadDeadline
+// modifying that Conn's read deadline to the past.
+// See golang.org/cl/30164 which documented this. The net/http package
+// depends on this.
+func TestReadTimeoutUnblocksRead(t *testing.T) {
+	serverDone := make(chan struct{})
+	server := func(cs *TCPConn) error {
+		defer close(serverDone)
+		errc := make(chan error, 1)
+		go func() {
+			defer close(errc)
+			go func() {
+				// TODO: find a better way to wait
+				// until we're blocked in the cs.Read
+				// call below. Sleep is lame.
+				time.Sleep(100 * time.Millisecond)
+
+				// Interrupt the upcoming Read, unblocking it:
+				cs.SetReadDeadline(time.Unix(123, 0)) // time in the past
+			}()
+			var buf [1]byte
+			n, err := cs.Read(buf[:1])
+			if n != 0 || err == nil {
+				errc <- fmt.Errorf("Read = %v, %v; want 0, non-nil", n, err)
+			}
+		}()
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(5 * time.Second):
+			buf := make([]byte, 2<<20)
+			buf = buf[:runtime.Stack(buf, true)]
+			// println("Stacks at timeout:\n", string(buf))
+			return errors.New("timeout waiting for Read to finish")
+		}
+
+	}
+	// Do nothing in the client. Never write. Just wait for the
+	// server's half to be done.
+	client := func(*TCPConn) error {
+		<-serverDone
 		return nil
 	}
 	withTCPConnPair(t, client, server)
