@@ -201,6 +201,9 @@ type TCPConn struct {
 func readConn(id int32, b []byte) (int32, bool)
 
 func (c *TCPConn) Read(b []byte) (ln int, err error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
 	for {
 		if c.es.error() {
 			return 0, c.es.getError()

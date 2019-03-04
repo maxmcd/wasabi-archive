@@ -16,6 +16,7 @@ import (
 )
 
 func TestDialAndHostAndConnect(t *testing.T) {
+	println("TestDialAndHostAndConnect")
 	l, err := Listen("tcp", "127.0.0.1:8482")
 	if err != nil {
 		t.Error(err)
@@ -64,7 +65,7 @@ func TestDialAndHostAndConnect(t *testing.T) {
 	if err := l.Close(); err != nil {
 		t.Error(err)
 	}
-
+	println("finished TestDialAndHostAndConnect")
 }
 
 func TestRoundtripperAndListenAndServe(t *testing.T) {
@@ -72,12 +73,12 @@ func TestRoundtripperAndListenAndServe(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(body)
 	})
-	go ListenAndServe("127.0.0.1:8080", handler)
+	go ListenAndServe("127.0.0.1:40444", handler)
 	time.Sleep(time.Millisecond * 10) // wait for the server to be ready
 
 	client := http.Client{Transport: &RoundTripper{}}
 
-	req, err := http.NewRequest("GET", "http://localhost:8080", nil)
+	req, err := http.NewRequest("GET", "http://localhost:40444", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -113,6 +114,7 @@ func TestLookupIP(t *testing.T) {
 }
 
 func TestCloseRead(t *testing.T) {
+	println("test close read")
 	network := "tcp"
 	ln, err := newLocalListener(network)
 	if err != nil {
@@ -136,6 +138,7 @@ func TestCloseRead(t *testing.T) {
 		// }
 		t.Fatal(err)
 	}
+	println("stuck reading")
 	var b [1]byte
 	n, err := c.Read(b[:])
 	if n != 0 || err == nil {
@@ -144,7 +147,7 @@ func TestCloseRead(t *testing.T) {
 }
 
 func TestCloseWrite(t *testing.T) {
-
+	println("TestCloseWrite")
 	handler := func(ls *localServer, ln net.Listener) {
 		c, err := ln.Accept()
 		if err != nil {
@@ -212,10 +215,11 @@ func TestCloseWrite(t *testing.T) {
 	if err == nil {
 		t.Fatalf("got (%d, %v); want (any, error)", n, err)
 	}
-
+	println("finished TestCloseWrite")
 }
 
 func TestListenerClose(t *testing.T) {
+	println("TestListenerClose")
 	network := "tcp"
 
 	ln, err := newLocalListener(network)
@@ -262,10 +266,12 @@ func TestListenerClose(t *testing.T) {
 			cc.Close()
 		}
 	}
+	println("finished TestListenerClose")
 }
 
 // Issue 24808: verify that ECONNRESET is not temporary for read.
 func TestNotTemporaryRead(t *testing.T) {
+	println("TestNotTemporaryRead")
 	t.Parallel()
 	server := func(cs *TCPConn) error {
 		cs.SetLinger(0)
@@ -289,10 +295,12 @@ func TestNotTemporaryRead(t *testing.T) {
 		return nil
 	}
 	withTCPConnPair(t, client, server)
+	println("finished TestNotTemporaryRead")
 }
 
 // Issue 17695: verify that a blocked Read is woken up by a Close.
 func TestCloseUnblocksRead(t *testing.T) {
+	println("TestCloseUnblocksRead")
 	t.Parallel()
 	server := func(cs *TCPConn) error {
 		// Give the client time to get stuck in a Read:
@@ -308,6 +316,7 @@ func TestCloseUnblocksRead(t *testing.T) {
 		return nil
 	}
 	withTCPConnPair(t, client, server)
+	println("finished TestCloseUnblocksRead")
 }
 
 // Tests that a blocked Read is interrupted by a concurrent SetReadDeadline
@@ -315,6 +324,7 @@ func TestCloseUnblocksRead(t *testing.T) {
 // See golang.org/cl/30164 which documented this. The net/http package
 // depends on this.
 func TestReadTimeoutUnblocksRead(t *testing.T) {
+	println("TestReadTimeoutUnblocksRead")
 	serverDone := make(chan struct{})
 	server := func(cs *TCPConn) error {
 		defer close(serverDone)
@@ -357,6 +367,7 @@ func TestReadTimeoutUnblocksRead(t *testing.T) {
 }
 
 func TestZeroByteRead(t *testing.T) {
+	println("TestZeroByteRead")
 	network := "tcp"
 
 	ln, err := newLocalListener(network)
@@ -383,26 +394,16 @@ func TestZeroByteRead(t *testing.T) {
 	}
 	defer sc.Close()
 
-	if runtime.GOOS == "windows" {
-		// A zero byte read on Windows caused a wait for readability first.
-		// Rather than change that behavior, satisfy it in this test.
-		// See Issue 15735.
-		go io.WriteString(sc, "a")
-	}
-
 	n, err := c.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte client read = %v, %v; want 0, nil", network, n, err)
 	}
 
-	if runtime.GOOS == "windows" {
-		// Same as comment above.
-		go io.WriteString(c, "a")
-	}
 	n, err = sc.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte server read = %v, %v; want 0, nil", network, n, err)
 	}
+	println("finished TestZeroByteRead")
 }
 
 // withTCPConnPair sets up a TCP connection between two peers, then
