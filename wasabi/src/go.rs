@@ -31,7 +31,13 @@ struct Callback {
 
 impl Callback {
     fn time_until_called(&self) -> time::Duration {
-        time::Duration::from_nanos((self.time - epoch_ns()).abs() as u64)
+        let ns = epoch_ns();
+        let nanos = if self.time > ns {
+            (self.time - ns) as u64
+        } else {
+            0
+        };
+        time::Duration::from_nanos(nanos)
     }
     fn sleep_until_called(&self) {
         thread::sleep(self.time_until_called());
@@ -90,6 +96,9 @@ impl SharedState {
     fn recv_net_events(&mut self) -> Option<Vec<mio::event::Event>> {
         let mut events = Vec::new();
 
+        // We have to clear them before we do the empty check below
+        self.clear_cleared_timeouts();
+
         // If there's nothing at all to be called, wait for network events
         if self.call_queue.is_empty() && self.timeout_heap.is_empty() {
             events.push(self.net_loop.recv().unwrap());
@@ -97,10 +106,8 @@ impl SharedState {
         // If the timeout heap has candidates only wait on the recv until
         // the next timeout
         } else if self.call_queue.is_empty() && !self.timeout_heap.is_empty() {
-            if let Ok(event) = self
-                .net_loop
-                .recv_timeout(self.timeout_heap.peek().unwrap().time_until_called())
-            {
+            let duration = self.timeout_peek().unwrap().time_until_called();
+            if let Ok(event) = self.net_loop.recv_timeout(duration) {
                 events.push(event)
             }
         }
@@ -118,13 +125,13 @@ impl SharedState {
     }
     fn check_expired_timeouts(&mut self) -> bool {
         let mut should_return = false;
-        if let Some(callback) = self.timeout_heap.peek() {
+        if let Some(callback) = self.timeout_peek() {
             if callback.time < epoch_ns() {
                 should_return = true;
             }
         }
         if should_return {
-            self.timeout_heap.pop();
+            self.timeout_pop();
             should_return
         } else {
             should_return
@@ -141,6 +148,26 @@ impl SharedState {
         self.js.add_object(pe, "this").unwrap();
         self.js.add_array(pe, "args", args).unwrap();
         self.call_queue.push_back(pe);
+    }
+    fn clear_cleared_timeouts(&mut self) {
+        loop {
+            if let Some(cb) = self.timeout_heap.peek() {
+                if self.timeout_map.contains_key(&cb.id) {
+                    break;
+                }
+            } else {
+                break;
+            }
+            self.timeout_heap.pop();
+        }
+    }
+    fn timeout_peek(&mut self) -> Option<&Callback> {
+        self.clear_cleared_timeouts();
+        self.timeout_heap.peek()
+    }
+    fn timeout_pop(&mut self) -> Option<Callback> {
+        self.clear_cleared_timeouts();
+        self.timeout_heap.pop()
     }
     fn process_event_loop(&mut self) -> Result<bool, Error> {
         // Stop execution if we've exited
@@ -180,8 +207,9 @@ impl SharedState {
         }
 
         // See if we can wait for a callback
-        if let Some(callback) = self.timeout_heap.pop() {
+        if let Some(callback) = self.timeout_pop() {
             callback.sleep_until_called();
+
             return Ok(false);
         }
 
@@ -226,7 +254,6 @@ impl ContextHelpers for FuncContext {
                 .unwrap()
         }
     }
-
     fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
         unsafe {
             let memory_def = &*self.definition();
@@ -281,6 +308,7 @@ trait ContextHelpers {
         self.shared_state().js.value_length(target)
     }
     // TODO: return Result
+
     fn reflect_apply(
         &mut self,
         target: i64,
@@ -381,7 +409,6 @@ trait ContextHelpers {
             .js
             .reflect_construct(target, argument_list)
     }
-
     fn get_i32(&self, sp: i32) -> i32 {
         let spu = sp as usize;
         as_i32_le(self.mem_slice(spu, spu + 8))
@@ -426,7 +453,6 @@ trait ContextHelpers {
             }
         }
     }
-
     fn get_string(&self, sp: i32) -> &str {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
@@ -468,7 +494,6 @@ trait ContextHelpers {
             }
         }
     }
-
     fn set_error(&mut self, addr: i32, err: &Fail) {
         self.store_string(addr, err.to_string())
     }
@@ -521,11 +546,13 @@ extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
     });
     fc.shared_state_mut().timeout_map.insert(id, true);
 }
+
 extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
     fc.shared_state_mut().timeout_map.remove(&id);
 }
+
 extern "C" fn go_syscall(_sp: i32) {
     println!("go_syscall")
 }
@@ -544,6 +571,7 @@ extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
         .unwrap();
     fc.store_value(sp + 32, result);
 }
+
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let target = fc.load_value(sp + 8).0;
@@ -557,6 +585,7 @@ extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
         fc.set_error(sp, err.as_fail())
     };
 }
+
 extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let target = fc.load_value(sp + 8).0;
@@ -564,12 +593,15 @@ extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
     let jsv = fc.reflect_get_index(target, property_key).unwrap();
     fc.store_value(sp + 24, jsv);
 }
+
 extern "C" fn go_js_value_set_index(_sp: i32) {
     println!("js_value_set_index")
 }
+
 extern "C" fn go_js_value_invoke(_sp: i32) {
     println!("js_value_invoke")
 }
+
 extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
@@ -580,6 +612,7 @@ extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     fc.store_value(sp + 56, result);
     fc.set_bool(sp + 64, true);
 }
+
 extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8).0;
@@ -588,15 +621,18 @@ extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     fc.store_value(sp + 40, result);
     fc.set_bool(sp + 48, true);
 }
+
 extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let v = fc.load_value(sp + 8);
     let num = fc.value_length(v.0).unwrap();
     fc.set_i64(sp + 16, num);
 }
+
 extern "C" fn go_js_value_prepare_string(_sp: i32) {
     println!("js_value_prepare_string")
 }
+
 extern "C" fn go_js_value_load_string(_sp: i32) {
     println!("js_value_load_string")
 }
@@ -648,6 +684,7 @@ extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
     fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
+
 extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let reference = fc.get_i32(sp + 8);
@@ -795,17 +832,6 @@ extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
     }
 }
 
-extern "C" fn go_lookup_port(vmctx: *mut VMContext, sp: i32) {
-    let fc = FuncContext::new(vmctx);
-    let network = fc.get_string(sp + 8).to_owned();
-    println!("{:?}", network);
-    let service = fc.get_string(sp + 8 + 16).to_owned();
-    println!("{:?}", service);
-    println!("{:?}", format!(":{}", service));
-    let addrs = "0.0.0.0:0".to_socket_addrs();
-    println!("{:?}", addrs);
-}
-
 extern "C" fn go_local_addr(vmctx: *mut VMContext, sp: i32) {
     let fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
@@ -852,7 +878,6 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("github.com/maxmcd/wasabi/internal/net.listenTCP", go_listen_tcp as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.localAddr", go_local_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.lookupIP", go_lookup_ip_addr as *const VMFunctionBody),
-        ("github.com/maxmcd/wasabi/internal/net.lookupPort", go_lookup_port as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.readConn", go_read_tcp_conn as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.remoteAddr", go_remote_addr as *const VMFunctionBody),
         ("github.com/maxmcd/wasabi/internal/net.shutdownConn", go_shutdown_tcp_conn as *const VMFunctionBody),
@@ -1017,6 +1042,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
                 ));
             }
         }
+
         function_name = "resume";
         args = vec![];
         let instance = &mut context.get_instance(&"go").unwrap();
@@ -1142,6 +1168,11 @@ mod tests {
     }
 
     #[test]
+    fn test_event_loop_timeouts() {
+        let mut ss = SharedState::new();
+    }
+
+    #[test]
     fn test_event_loop_only_callback() {
         let mut ss = SharedState::new();
         ss.net_loop.is_listening = true;
@@ -1157,18 +1188,42 @@ mod tests {
         assert_eq!(should_break, false);
         assert!(ss.timeout_heap.is_empty());
 
-        let ms = 2;
-        let id = 1;
+        let ms = 5;
+        let id = 2;
         ss.timeout_heap.push(Callback {
             time: epoch_ns() + ms * 1_000_000,
             id,
         });
 
+        let id = 3;
+        let ms_2 = 15;
+        ss.timeout_heap.push(Callback {
+            time: epoch_ns() + ms_2 * 1_000_000,
+            id,
+        });
+
         let timeout_timer = SystemTime::now();
         let should_break = ss.process_event_loop().unwrap();
+        println!("{:?}", timeout_timer.elapsed().unwrap());
         assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
         assert_eq!(should_break, false);
-        assert!(ss.timeout_heap.is_empty());
+
+        ss.add_pending_event(4, vec![]);
+        ss.process_event_loop().unwrap();
+        assert!(ss.call_queue.is_empty());
+
+        let should_break = ss.process_event_loop().unwrap();
+        println!("{:?}", timeout_timer.elapsed().unwrap());
+        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms_2 as u64));
+        assert_eq!(should_break, false);
     }
 
+    #[test]
+    fn bench_epoch_nano() {
+        let time_timer = SystemTime::now();
+        for _ in 0..1000 {
+            epoch_ns();
+        }
+        println!("epoch_ns took {:?}", time_timer.elapsed().unwrap() / 1000);
+    }
 }

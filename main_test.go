@@ -15,6 +15,27 @@ import (
 	"time"
 )
 
+func TestTimeouts(t *testing.T) {
+	// fmt.Println(time.Now())
+	println("TestTimeouts")
+	println(fmt.Sprintf("%v", time.Now().UnixNano()))
+	t0 := time.Now()
+	times := []time.Duration{9, 1, 8, 2, 7, 3, 6, 4, 5}
+	resultChan := make(chan time.Duration, len(times))
+	for _, amount := range times {
+		go func(amount time.Duration) {
+			println(fmt.Sprintf("Scheduling %d %v", amount, time.Now().Sub(t0)))
+			time.Sleep(amount * (time.Millisecond * 1))
+			resultChan <- amount
+		}(amount)
+	}
+
+	for i := 0; i < len(times); i++ {
+		out := <-resultChan
+		println(fmt.Sprintf("Time %d took %v", out, time.Now().Sub(t0)))
+	}
+}
+
 func TestDialAndHostAndConnect(t *testing.T) {
 	println("TestDialAndHostAndConnect")
 	l, err := Listen("tcp", "127.0.0.1:8482")

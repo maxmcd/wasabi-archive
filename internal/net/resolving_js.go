@@ -4,7 +4,6 @@ package net
 
 import (
 	"errors"
-	"fmt"
 	"net"
 
 	"github.com/maxmcd/wasabi/internal/wasm"
@@ -36,10 +35,7 @@ func LookupIP(host string) (addrs []net.IP, err error) {
 	return
 }
 
-func lookupPort(network, service string) (int32, bool)
-
 func LookupPort(network, service string) (port int, err error) {
-	ref, ok := lookupPort(network, service)
-	fmt.Println(ref, ok)
+	panic("unimplemented")
 	return 0, nil
 }
