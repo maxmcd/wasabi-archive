@@ -10,57 +10,19 @@ use network;
 use network::{addr_to_bytes, NetLoop};
 use rand::{thread_rng, Rng};
 use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{io, slice, str, thread, time};
+use std::{io, slice, str};
 use target_lexicon::HOST;
+use timeout_heap::ToHeap;
+use util::epoch_ns;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
 use wasmtime_jit::{ActionOutcome, Compiler, Context, InstantiationError, RuntimeValue};
 use wasmtime_runtime::{Imports, InstanceHandle, VMContext, VMFunctionBody, VMMemoryDefinition};
-
-#[derive(Debug, Eq)]
-struct Callback {
-    time: i64,
-    id: i32,
-}
-
-impl Callback {
-    fn time_until_called(&self) -> time::Duration {
-        let ns = epoch_ns();
-        let nanos = if self.time > ns {
-            (self.time - ns) as u64
-        } else {
-            0
-        };
-        time::Duration::from_nanos(nanos)
-    }
-    fn sleep_until_called(&self) {
-        thread::sleep(self.time_until_called());
-    }
-}
-
-impl Ord for Callback {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // min heap
-        self.time.cmp(&other.time).reverse()
-    }
-}
-impl PartialOrd for Callback {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for Callback {
-    fn eq(&self, other: &Self) -> bool {
-        self.time == other.time && self.id == other.id
-    }
-}
 
 #[derive(Debug)]
 struct SharedState {
@@ -70,9 +32,7 @@ struct SharedState {
     poll: mio::Poll,
     net_loop: NetLoop,
     net_callback_id: i64,
-    next_timeout_id: i32,
-    timeout_heap: BinaryHeap<Callback>,
-    timeout_map: HashMap<i32, bool>,
+    timeout_heap: ToHeap,
     call_queue: VecDeque<i64>,
     js: js::Js,
 }
@@ -80,14 +40,12 @@ struct SharedState {
 impl SharedState {
     fn new() -> Self {
         Self {
-            timeout_heap: BinaryHeap::new(),
-            timeout_map: HashMap::new(),
+            timeout_heap: ToHeap::new(),
             definition: None,
             exited: false,
             poll: mio::Poll::new().unwrap(),
             net_loop: NetLoop::new(),
             net_callback_id: 0,
-            next_timeout_id: 1,
             pending_event_ref: 0,
             js: js::Js::new().unwrap(),
             call_queue: VecDeque::new(),
@@ -97,7 +55,7 @@ impl SharedState {
         let mut events = Vec::new();
 
         // We have to clear them before we do the empty check below
-        self.clear_cleared_timeouts();
+        self.timeout_heap.clean_timeouts();
 
         // If there's nothing at all to be called, wait for network events
         if self.call_queue.is_empty() && self.timeout_heap.is_empty() {
@@ -106,7 +64,7 @@ impl SharedState {
         // If the timeout heap has candidates only wait on the recv until
         // the next timeout
         } else if self.call_queue.is_empty() && !self.timeout_heap.is_empty() {
-            let duration = self.timeout_peek().unwrap().time_until_called();
+            let duration = self.timeout_heap.duration_when_expired().unwrap();
             if let Ok(event) = self.net_loop.recv_timeout(duration) {
                 events.push(event)
             }
@@ -123,20 +81,6 @@ impl SharedState {
             Some(events)
         }
     }
-    fn check_expired_timeouts(&mut self) -> bool {
-        let mut should_return = false;
-        if let Some(callback) = self.timeout_peek() {
-            if callback.time < epoch_ns() {
-                should_return = true;
-            }
-        }
-        if should_return {
-            self.timeout_pop();
-            should_return
-        } else {
-            should_return
-        }
-    }
     fn add_pending_event(&mut self, id: i64, args: Vec<(i64, bool)>) {
         // TODO: return result
         let pe = self.js.slab_add(js::Value::Object {
@@ -148,26 +92,6 @@ impl SharedState {
         self.js.add_object(pe, "this").unwrap();
         self.js.add_array(pe, "args", args).unwrap();
         self.call_queue.push_back(pe);
-    }
-    fn clear_cleared_timeouts(&mut self) {
-        loop {
-            if let Some(cb) = self.timeout_heap.peek() {
-                if self.timeout_map.contains_key(&cb.id) {
-                    break;
-                }
-            } else {
-                break;
-            }
-            self.timeout_heap.pop();
-        }
-    }
-    fn timeout_peek(&mut self) -> Option<&Callback> {
-        self.clear_cleared_timeouts();
-        self.timeout_heap.peek()
-    }
-    fn timeout_pop(&mut self) -> Option<Callback> {
-        self.clear_cleared_timeouts();
-        self.timeout_heap.pop()
     }
     fn process_event_loop(&mut self) -> Result<bool, Error> {
         // Stop execution if we've exited
@@ -190,7 +114,7 @@ impl SharedState {
         }
 
         // Check if any timeouts have expired.
-        if self.check_expired_timeouts() {
+        if self.timeout_heap.any_expired_timeouts() {
             return Ok(false);
         }
 
@@ -207,9 +131,7 @@ impl SharedState {
         }
 
         // See if we can wait for a callback
-        if let Some(callback) = self.timeout_pop() {
-            callback.sleep_until_called();
-
+        if let Some(_) = self.timeout_heap.pop_when_expired() {
             return Ok(false);
         }
 
@@ -524,12 +446,6 @@ trait ContextHelpers {
     }
 }
 
-fn epoch_ns() -> i64 {
-    let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    since_the_epoch.as_secs() as i64 * 1_000_000_000 + i64::from(since_the_epoch.subsec_nanos())
-}
-
 extern "C" fn go_debug(_sp: i32) {
     println!("debug")
 }
@@ -537,20 +453,14 @@ extern "C" fn go_debug(_sp: i32) {
 extern "C" fn go_schedule_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let count = fc.get_i64(sp + 8);
-    let id = fc.shared_state().next_timeout_id;
+    let id = fc.shared_state_mut().timeout_heap.add(count);
     fc.set_i32(sp + 16, id);
-    fc.shared_state_mut().next_timeout_id += 1;
-    fc.shared_state_mut().timeout_heap.push(Callback {
-        time: epoch_ns() + count * 1_000_000,
-        id,
-    });
-    fc.shared_state_mut().timeout_map.insert(id, true);
 }
 
 extern "C" fn go_clear_timeout_event(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let id = fc.get_i32(sp + 8);
-    fc.shared_state_mut().timeout_map.remove(&id);
+    fc.shared_state_mut().timeout_heap.remove(id);
 }
 
 extern "C" fn go_syscall(_sp: i32) {
@@ -1017,7 +927,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
     };
 
     {
-        let instance = &mut context.get_instance(&"go").unwrap();
+        let instance = context.get_instance(&"go").unwrap();
         let host_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
@@ -1045,7 +955,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
 
         function_name = "resume";
         args = vec![];
-        let instance = &mut context.get_instance(&"go").unwrap();
+        let instance = context.get_instance(&"go").unwrap();
         let shared_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
@@ -1065,6 +975,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
 mod tests {
     use super::*;
     use std::any::Any;
+    use std::time;
 
     struct TestVMContext {
         shared_state: Box<dyn Any>,
@@ -1167,55 +1078,45 @@ mod tests {
         assert_eq!(should_break, true);
     }
 
-    #[test]
-    fn test_event_loop_timeouts() {
-        let mut ss = SharedState::new();
-    }
+    // #[test]
+    // fn test_event_loop_timeouts() {
+    //     let mut ss = SharedState::new();
+    // }
 
     #[test]
     fn test_event_loop_only_callback() {
         let mut ss = SharedState::new();
-        ss.net_loop.is_listening = true;
+        for is_listening in vec![true, false] {
+            ss.net_loop.is_listening = is_listening;
 
-        let ms = 0;
-        let id = 1;
-        ss.timeout_heap.push(Callback {
-            time: epoch_ns() + ms * 1_000_000,
-            id,
-        });
+            let ms = 2;
+            ss.timeout_heap.add(ms);
 
-        let should_break = ss.process_event_loop().unwrap();
-        assert_eq!(should_break, false);
-        assert!(ss.timeout_heap.is_empty());
+            let should_break = ss.process_event_loop().unwrap();
+            assert_eq!(should_break, false);
+            assert!(ss.timeout_heap.is_empty());
 
-        let ms = 5;
-        let id = 2;
-        ss.timeout_heap.push(Callback {
-            time: epoch_ns() + ms * 1_000_000,
-            id,
-        });
+            let ms = 5;
+            ss.timeout_heap.add(ms);
 
-        let id = 3;
-        let ms_2 = 15;
-        ss.timeout_heap.push(Callback {
-            time: epoch_ns() + ms_2 * 1_000_000,
-            id,
-        });
+            let ms_2 = 15;
+            ss.timeout_heap.add(ms_2);
 
-        let timeout_timer = SystemTime::now();
-        let should_break = ss.process_event_loop().unwrap();
-        println!("{:?}", timeout_timer.elapsed().unwrap());
-        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
-        assert_eq!(should_break, false);
+            let timeout_timer = SystemTime::now();
+            let should_break = ss.process_event_loop().unwrap();
+            println!("{:?}", timeout_timer.elapsed().unwrap());
+            assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
+            assert_eq!(should_break, false);
 
-        ss.add_pending_event(4, vec![]);
-        ss.process_event_loop().unwrap();
-        assert!(ss.call_queue.is_empty());
+            ss.add_pending_event(4, vec![]);
+            ss.process_event_loop().unwrap();
+            assert!(ss.call_queue.is_empty());
 
-        let should_break = ss.process_event_loop().unwrap();
-        println!("{:?}", timeout_timer.elapsed().unwrap());
-        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms_2 as u64));
-        assert_eq!(should_break, false);
+            let should_break = ss.process_event_loop().unwrap();
+            println!("{:?}", timeout_timer.elapsed().unwrap());
+            assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms_2 as u64));
+            assert_eq!(should_break, false);
+        }
     }
 
     #[test]

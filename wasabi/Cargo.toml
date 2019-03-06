@@ -15,7 +15,7 @@ rand = "0.6.1"
 target-lexicon = { version = "0.2.0", default-features = false }
 failure = "0.1.5"
 wabt = "0.7"
-wasmtime-environ = { git = "https://github.com/maxmcd/wasmtime", branch = "parallelize-rayon"}
-wasmtime-jit = { git = "https://github.com/maxmcd/wasmtime", branch = "parallelize-rayon"}
-wasmtime-obj = { git = "https://github.com/maxmcd/wasmtime", branch = "parallelize-rayon"}
-wasmtime-runtime = { git = "https://github.com/maxmcd/wasmtime", branch = "parallelize-rayon"}
+wasmtime-environ = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-jit = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-obj = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-runtime = { git = "https://github.com/cranestation/wasmtime" }

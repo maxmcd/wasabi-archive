@@ -1021,10 +1021,10 @@ dependencies = [
  "slab 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wabt 0.7.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
- "wasmtime-jit 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
- "wasmtime-obj 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
- "wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
+ "wasmtime-environ 0.1.0 (git+https://github.com/cranestation/wasmtime)",
+ "wasmtime-jit 0.1.0 (git+https://github.com/cranestation/wasmtime)",
+ "wasmtime-obj 0.1.0 (git+https://github.com/cranestation/wasmtime)",
+ "wasmtime-runtime 0.1.0 (git+https://github.com/cranestation/wasmtime)",
 ]
 
 [[package]]
@@ -1040,7 +1040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "wasmtime-environ"
 version = "0.1.0"
-source = "git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon#bd4bf1382d774c5dec13b558361164aa152b82a6"
+source = "git+https://github.com/cranestation/wasmtime#6eb09d9eddbc64e86072aff73b6cfe3470ea8a35"
 dependencies = [
  "cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-codegen 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-jit"
 version = "0.1.0"
-source = "git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon#bd4bf1382d774c5dec13b558361164aa152b82a6"
+source = "git+https://github.com/cranestation/wasmtime#6eb09d9eddbc64e86072aff73b6cfe3470ea8a35"
 dependencies = [
  "cranelift-codegen 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-entity 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1066,25 +1066,25 @@ dependencies = [
  "region 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "target-lexicon 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasmparser 0.29.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
- "wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
+ "wasmtime-environ 0.1.0 (git+https://github.com/cranestation/wasmtime)",
+ "wasmtime-runtime 0.1.0 (git+https://github.com/cranestation/wasmtime)",
 ]
 
 [[package]]
 name = "wasmtime-obj"
 version = "0.1.0"
-source = "git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon#bd4bf1382d774c5dec13b558361164aa152b82a6"
+source = "git+https://github.com/cranestation/wasmtime#6eb09d9eddbc64e86072aff73b6cfe3470ea8a35"
 dependencies = [
  "cranelift-codegen 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cranelift-entity 0.28.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "faerie 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
+ "wasmtime-environ 0.1.0 (git+https://github.com/cranestation/wasmtime)",
 ]
 
 [[package]]
 name = "wasmtime-runtime"
 version = "0.1.0"
-source = "git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon#bd4bf1382d774c5dec13b558361164aa152b82a6"
+source = "git+https://github.com/cranestation/wasmtime#6eb09d9eddbc64e86072aff73b6cfe3470ea8a35"
 dependencies = [
  "bindgen 0.47.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1101,7 +1101,7 @@ dependencies = [
  "memoffset 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "region 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)",
+ "wasmtime-environ 0.1.0 (git+https://github.com/cranestation/wasmtime)",
  "winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -1292,10 +1292,10 @@ dependencies = [
 "checksum wabt-sys 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)" = "a6265b25719e82598d104b3717375e37661d41753e2c84cde3f51050c7ed7e3c"
 "checksum wasmparser 0.23.0 (registry+https://github.com/rust-lang/crates.io-index)" = "b5e01c420bc7d36e778bd242e1167b079562ba8b34087122cc9057187026d060"
 "checksum wasmparser 0.29.2 (registry+https://github.com/rust-lang/crates.io-index)" = "981a8797cf89762e0233ec45fae731cb79a4dfaee12d9f0fe6cee01e4ac58d00"
-"checksum wasmtime-environ 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)" = "<none>"
-"checksum wasmtime-jit 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)" = "<none>"
-"checksum wasmtime-obj 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)" = "<none>"
-"checksum wasmtime-runtime 0.1.0 (git+https://github.com/maxmcd/wasmtime?branch=parallelize-rayon)" = "<none>"
+"checksum wasmtime-environ 0.1.0 (git+https://github.com/cranestation/wasmtime)" = "<none>"
+"checksum wasmtime-jit 0.1.0 (git+https://github.com/cranestation/wasmtime)" = "<none>"
+"checksum wasmtime-obj 0.1.0 (git+https://github.com/cranestation/wasmtime)" = "<none>"
+"checksum wasmtime-runtime 0.1.0 (git+https://github.com/cranestation/wasmtime)" = "<none>"
 "checksum which 2.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "b57acb10231b9493c8472b20cb57317d0679a49e0bdbee44b3b803a6473af164"
 "checksum winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)" = "167dc9d6949a9b857f3451275e911c3f44255842c1f7a76f33c55103a909087a"
 "checksum winapi 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)" = "92c1eb33641e276cfa214a0522acad57be5c56b10cb348b3c5117db75f3ac4b0"

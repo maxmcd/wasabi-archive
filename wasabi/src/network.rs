@@ -132,12 +132,10 @@ impl NetLoop {
                 NetTcp::Listener(listener) => listener.take_error(),
                 NetTcp::Stream(stream) => stream.take_error(),
             },
-            None => {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Network object not found in slab",
-                ));
-            }
+            None => Err(Error::new(
+                ErrorKind::Other,
+                "Network object not found in slab",
+            )),
         }
     }
     pub fn local_addr(&self, i: usize) -> Result<SocketAddr> {
