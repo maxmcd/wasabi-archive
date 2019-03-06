@@ -130,8 +130,9 @@ func init() {
 }
 
 type TCPListener struct {
-	token int32
-	es    *eventState
+	token     int32
+	es        *eventState
+	rDeadline time.Time
 }
 
 func acceptTcp(id int32) (int32, bool)
@@ -190,6 +191,11 @@ func (l TCPListener) Addr() net.Addr {
 	}
 }
 
+func (l TCPListener) SetDeadline(t time.Time) error {
+	l.rDeadline = t
+	return nil
+}
+
 type TCPConn struct {
 	mu        sync.Mutex
 	token     int32
@@ -201,9 +207,6 @@ type TCPConn struct {
 func readConn(id int32, b []byte) (int32, bool)
 
 func (c *TCPConn) Read(b []byte) (ln int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
 	for {
 		if c.es.error() {
 			return 0, c.es.getError()
@@ -221,10 +224,11 @@ func (c *TCPConn) Read(b []byte) (ln int, err error) {
 		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
 		err = errors.New(string(bytes))
 
-		// TODO: if "Network object not found in slab" error then the connection
-		// likely existed and was closed.
-
-		if !strings.Contains(err.Error(), "Resource temporarily unavailable (os error") {
+		// "Network object not found in slab" error then the connection existed
+		// and was closed.
+		if strings.Contains(err.Error(), "Network object not found in slab") {
+			return 0, io.EOF
+		} else if !strings.Contains(err.Error(), "Resource temporarily unavailable (os error") {
 			return 0, err
 		} else {
 			if c.es.readable() {
@@ -258,7 +262,9 @@ func (c *TCPConn) Write(b []byte) (ln int, err error) {
 		}
 		bytes, _ := wasm.GetBytes(length) // ln is ref if there's an error
 		err = errors.New(string(bytes))
-		if err.Error() != "Resource temporarily unavailable (os error 35)" {
+		if strings.Contains(err.Error(), "Network object not found in slab") {
+			return 0, syscall.EPIPE
+		} else if err.Error() != "Resource temporarily unavailable (os error 35)" {
 			return 0, err
 		}
 		if err := connections[c.token].writewait(); err != nil {

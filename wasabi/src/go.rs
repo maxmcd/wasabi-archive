@@ -131,7 +131,7 @@ impl SharedState {
         }
 
         // See if we can wait for a callback
-        if let Some(_) = self.timeout_heap.pop_when_expired() {
+        if self.timeout_heap.pop_when_expired().is_some() {
             return Ok(false);
         }
 
@@ -1096,11 +1096,11 @@ mod tests {
             assert_eq!(should_break, false);
             assert!(ss.timeout_heap.is_empty());
 
-            let ms = 5;
-            ss.timeout_heap.add(ms);
-
             let ms_2 = 15;
             ss.timeout_heap.add(ms_2);
+
+            let ms = 5;
+            ss.timeout_heap.add(ms);
 
             let timeout_timer = SystemTime::now();
             let should_break = ss.process_event_loop().unwrap();
@@ -1119,12 +1119,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bench_epoch_nano() {
-        let time_timer = SystemTime::now();
-        for _ in 0..1000 {
-            epoch_ns();
-        }
-        println!("epoch_ns took {:?}", time_timer.elapsed().unwrap() / 1000);
-    }
 }

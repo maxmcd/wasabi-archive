@@ -508,3 +508,85 @@ func newLocalServer(network string) (*localServer, error) {
 	}
 	return &localServer{Listener: ln, done: make(chan bool)}, nil
 }
+
+// someTimeout is used just to test that net.Conn implementations
+// don't explode when their SetFooDeadline methods are called.
+// It isn't actually used for testing timeouts.
+const someTimeout = 10 * time.Second
+
+func TestConnAndListener(t *testing.T) {
+	network := "tcp"
+
+	ls, err := newLocalServer(network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ls.teardown()
+	ch := make(chan error, 1)
+	handler := func(ls *localServer, ln net.Listener) { transponder(ln, ch) }
+	if err := ls.buildup(handler); err != nil {
+		t.Fatal(err)
+	}
+	if ls.Listener.Addr().Network() != network {
+		t.Fatalf("got %s; want %s", ls.Listener.Addr().Network(), network)
+	}
+
+	c, err := Dial(ls.Listener.Addr().Network(), ls.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.LocalAddr().Network() != network || c.RemoteAddr().Network() != network {
+		t.Fatalf("got %s->%s; want %s->%s", c.LocalAddr().Network(), c.RemoteAddr().Network(), network, network)
+	}
+	c.SetDeadline(time.Now().Add(someTimeout))
+	c.SetReadDeadline(time.Now().Add(someTimeout))
+	c.SetWriteDeadline(time.Now().Add(someTimeout))
+
+	if _, err := c.Write([]byte("CONN AND LISTENER TEST")); err != nil {
+		t.Fatal(err)
+	}
+	rb := make([]byte, 128)
+	if _, err := c.Read(rb); err != nil {
+		t.Fatal(err)
+	}
+
+	for err := range ch {
+		t.Errorf("#: %v", err)
+	}
+}
+
+func transponder(ln net.Listener, ch chan<- error) {
+	defer close(ch)
+
+	switch ln := ln.(type) {
+	case *TCPListener:
+		ln.SetDeadline(time.Now().Add(someTimeout))
+	}
+	c, err := ln.Accept()
+	if err != nil {
+		ch <- err
+		return
+	}
+	defer c.Close()
+
+	network := ln.Addr().Network()
+	if c.LocalAddr().Network() != network || c.RemoteAddr().Network() != network {
+		ch <- fmt.Errorf("got %v->%v; expected %v->%v", c.LocalAddr().Network(), c.RemoteAddr().Network(), network, network)
+		return
+	}
+	c.SetDeadline(time.Now().Add(someTimeout))
+	c.SetReadDeadline(time.Now().Add(someTimeout))
+	c.SetWriteDeadline(time.Now().Add(someTimeout))
+
+	b := make([]byte, 256)
+	n, err := c.Read(b)
+	if err != nil {
+		ch <- err
+		return
+	}
+	if _, err := c.Write(b[:n]); err != nil {
+		ch <- err
+		return
+	}
+}

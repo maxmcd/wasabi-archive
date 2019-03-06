@@ -88,6 +88,10 @@ func (l *TCPListener) Addr() net.Addr {
 	return l.tl.Addr()
 }
 
+func (l *TCPListener) SetDeadline(t time.Time) error {
+	return l.tl.SetDeadline(t)
+}
+
 func (l *TCPListener) Accept() (net.Conn, error) {
 	tc, err := l.tl.Accept()
 	if err != nil {
