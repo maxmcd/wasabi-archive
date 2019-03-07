@@ -408,7 +408,6 @@ func TestZeroByteRead(t *testing.T) {
 		}
 		connc <- c // might be nil
 	}()
-	println("TestZeroByteRead dial")
 	c, err := Dial(network, ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -419,12 +418,10 @@ func TestZeroByteRead(t *testing.T) {
 		return
 	}
 	defer sc.Close()
-	println("TestZeroByteRead read 1")
 	n, err := c.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte client read = %v, %v; want 0, nil", network, n, err)
 	}
-	println("TestZeroByteRead read 2")
 	n, err = sc.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte server read = %v, %v; want 0, nil", network, n, err)
