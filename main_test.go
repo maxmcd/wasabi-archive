@@ -34,6 +34,7 @@ func TestTimeouts(t *testing.T) {
 		out := <-resultChan
 		println(fmt.Sprintf("Time %d took %v", out, time.Now().Sub(t0)))
 	}
+	println("finished TestTimeouts")
 }
 
 func TestDialAndHostAndConnect(t *testing.T) {
@@ -90,6 +91,7 @@ func TestDialAndHostAndConnect(t *testing.T) {
 }
 
 func TestRoundtripperAndListenAndServe(t *testing.T) {
+	println("TestRoundtripperAndListenAndServe")
 	body := []byte("Hello World")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(body)
@@ -119,9 +121,11 @@ func TestRoundtripperAndListenAndServe(t *testing.T) {
 	if !bytes.Equal(body, b) {
 		t.Error("response body should be the same")
 	}
+	println("finished TestRoundtripperAndListenAndServe")
 }
 
 func TestLookupIP(t *testing.T) {
+	println("TestLookupIP")
 	ips, err := LookupIP("localhost")
 	if err != nil {
 		t.Error(err)
@@ -132,10 +136,11 @@ func TestLookupIP(t *testing.T) {
 			t.Error("should be local host")
 		}
 	}
+	println("finished TestLookupIP")
 }
 
 func TestCloseRead(t *testing.T) {
-	println("test close read")
+	println("TestCloseRead")
 	network := "tcp"
 	ln, err := newLocalListener(network)
 	if err != nil {
@@ -159,12 +164,12 @@ func TestCloseRead(t *testing.T) {
 		// }
 		t.Fatal(err)
 	}
-	println("stuck reading")
 	var b [1]byte
 	n, err := c.Read(b[:])
 	if n != 0 || err == nil {
 		t.Fatalf("got (%d, %v); want (0, error)", n, err)
 	}
+	println("finished TestCloseRead")
 }
 
 func TestCloseWrite(t *testing.T) {
@@ -293,7 +298,6 @@ func TestListenerClose(t *testing.T) {
 // Issue 24808: verify that ECONNRESET is not temporary for read.
 func TestNotTemporaryRead(t *testing.T) {
 	println("TestNotTemporaryRead")
-	t.Parallel()
 	server := func(cs *TCPConn) error {
 		cs.SetLinger(0)
 		// Give the client time to get stuck in a Read.
@@ -322,7 +326,6 @@ func TestNotTemporaryRead(t *testing.T) {
 // Issue 17695: verify that a blocked Read is woken up by a Close.
 func TestCloseUnblocksRead(t *testing.T) {
 	println("TestCloseUnblocksRead")
-	t.Parallel()
 	server := func(cs *TCPConn) error {
 		// Give the client time to get stuck in a Read:
 		time.Sleep(20 * time.Millisecond)
@@ -385,6 +388,7 @@ func TestReadTimeoutUnblocksRead(t *testing.T) {
 		return nil
 	}
 	withTCPConnPair(t, client, server)
+	println("finished TestReadTimeoutUnblocksRead")
 }
 
 func TestZeroByteRead(t *testing.T) {
@@ -404,6 +408,7 @@ func TestZeroByteRead(t *testing.T) {
 		}
 		connc <- c // might be nil
 	}()
+	println("TestZeroByteRead dial")
 	c, err := Dial(network, ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -414,12 +419,12 @@ func TestZeroByteRead(t *testing.T) {
 		return
 	}
 	defer sc.Close()
-
+	println("TestZeroByteRead read 1")
 	n, err := c.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte client read = %v, %v; want 0, nil", network, n, err)
 	}
-
+	println("TestZeroByteRead read 2")
 	n, err = sc.Read(nil)
 	if n != 0 || err != nil {
 		t.Errorf("%s: zero byte server read = %v, %v; want 0, nil", network, n, err)
@@ -515,6 +520,7 @@ func newLocalServer(network string) (*localServer, error) {
 const someTimeout = 10 * time.Second
 
 func TestConnAndListener(t *testing.T) {
+	println("TestConnAndListener")
 	network := "tcp"
 
 	ls, err := newLocalServer(network)
@@ -554,6 +560,7 @@ func TestConnAndListener(t *testing.T) {
 	for err := range ch {
 		t.Errorf("#: %v", err)
 	}
+	println("finished TestConnAndListener")
 }
 
 func transponder(ln net.Listener, ch chan<- error) {
