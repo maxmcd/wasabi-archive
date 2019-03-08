@@ -49,32 +49,18 @@ impl ContextHelpers for FuncContext {
                 .unwrap()
         }
     }
-    fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
-        unsafe {
-            let memory_def = &*self.definition();
-            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
-        }
-    }
-    fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
-        unsafe {
-            let memory_def = &*self.definition();
-            &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..end]
-        }
-    }
 }
 
 trait ContextHelpers {
     fn shared_state(&self) -> &SharedState;
     fn shared_state_mut(&mut self) -> &mut SharedState;
     fn definition(&self) -> *mut VMMemoryDefinition {
-        self.shared_state().definition.unwrap()
+        self.shared_state().definition()
     }
     fn mem(&self) -> (*mut u8, usize) {
         let memory_def = unsafe { &*self.definition() };
         (memory_def.base, memory_def.current_length)
     }
-    fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8];
-    fn mem_slice(&self, start: usize, end: usize) -> &[u8];
     fn js(&self) -> &js::Js {
         &self.shared_state().js
     }
@@ -151,7 +137,11 @@ trait ContextHelpers {
                         }
                     }
                 };
-                thread_rng().fill(self.mut_mem_slice(address, address + len));
+                thread_rng().fill(
+                    self.shared_state_mut()
+                        .mem
+                        .mut_mem_slice(address, address + len),
+                );
                 Some((0, true))
             }
             ("write", "fs") => {
@@ -206,7 +196,7 @@ trait ContextHelpers {
     }
     fn get_i32(&self, sp: i32) -> i32 {
         let spu = sp as usize;
-        as_i32_le(self.mem_slice(spu, spu + 8))
+        as_i32_le(self.shared_state().mem.mem_slice(spu, spu + 8))
     }
     fn get_i64(&self, sp: i32) -> i64 {
         let spu = sp as usize;
@@ -229,7 +219,7 @@ trait ContextHelpers {
         self._get_bytes(saddr, ln)
     }
     fn _get_bytes(&self, address: usize, ln: usize) -> &[u8] {
-        self.mem_slice(address, address + ln)
+        self.shared_state().mem.mem_slice(address, address + ln)
     }
     fn get_static_string(&self, sp: i32) -> &'static str {
         let key = str::from_utf8(self.get_bytes(sp)).unwrap();
@@ -252,20 +242,28 @@ trait ContextHelpers {
         str::from_utf8(self.get_bytes(sp)).unwrap()
     }
     fn set_i64(&mut self, sp: i32, num: i64) {
-        self.mut_mem_slice(sp as usize, (sp + 8) as usize)
+        self.shared_state_mut()
+            .mem
+            .mut_mem_slice(sp as usize, (sp + 8) as usize)
             .clone_from_slice(&i64_as_u8_le(num));
     }
     fn set_i32(&mut self, sp: i32, num: i32) {
-        self.mut_mem_slice(sp as usize, (sp + 4) as usize)
+        self.shared_state_mut()
+            .mem
+            .mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&i32_as_u8_le(num));
     }
     fn set_u32(&mut self, sp: i32, num: u32) {
-        self.mut_mem_slice(sp as usize, (sp + 4) as usize)
+        self.shared_state_mut()
+            .mem
+            .mut_mem_slice(sp as usize, (sp + 4) as usize)
             .clone_from_slice(&u32_as_u8_le(num));
     }
     fn set_bool(&mut self, addr: i32, value: bool) {
         let val = if value { 1 } else { 0 };
-        self.mut_mem_slice(addr as usize, (addr + 1) as usize)
+        self.shared_state_mut()
+            .mem
+            .mut_mem_slice(addr as usize, (addr + 1) as usize)
             .clone_from_slice(&[val]);
     }
     fn set_byte_array_array(&mut self, addr: i32, values: Vec<Vec<u8>>) {
@@ -298,7 +296,10 @@ trait ContextHelpers {
     fn store_value(&mut self, addr: i32, jsv: (i64, bool)) {
         let b = js::store_value(jsv);
         let addru = addr as usize;
-        self.mut_mem_slice(addru, addru + 8).copy_from_slice(&b)
+        self.shared_state_mut()
+            .mem
+            .mut_mem_slice(addru, addru + 8)
+            .copy_from_slice(&b)
     }
     fn store_string(&mut self, address: i32, val: String) {
         let reference = self.store_value_bytes(val.into_bytes());
@@ -315,7 +316,7 @@ trait ContextHelpers {
     }
     fn load_value(&self, address: i32) -> (i64, bool) {
         let addru = address as usize;
-        js::load_value(&self.mem_slice(addru, addru + 8))
+        js::load_value(&self.shared_state().mem.mem_slice(addru, addru + 8))
     }
 }
 
@@ -451,7 +452,11 @@ extern "C" fn go_get_random_data(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let addr = fc.get_i32(sp + 8);
     let ln = fc.get_i32(sp + 16);
-    thread_rng().fill(fc.mut_mem_slice(addr as usize, (addr + ln) as usize));
+    thread_rng().fill(
+        fc.shared_state_mut()
+            .mem
+            .mut_mem_slice(addr as usize, (addr + ln) as usize),
+    );
 }
 
 extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
@@ -464,7 +469,9 @@ extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
         js::Value::Bytes(ref b) => b.clone(), // TODO: extra clone here to get around borrow checker
         _ => panic!("load_bytes needs bytes"),
     };
-    fc.mut_mem_slice(addr as usize, (addr + ln) as usize)
+    fc.shared_state_mut()
+        .mem
+        .mut_mem_slice(addr as usize, (addr + ln) as usize)
         .clone_from_slice(&b);
 }
 
@@ -542,7 +549,9 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let ln = fc.get_i32(sp + 24);
     let written = fc.shared_state().net_loop.write_stream(
         id as usize,
-        fc.mem_slice(addr as usize, (addr + ln) as usize),
+        fc.shared_state()
+            .mem
+            .mem_slice(addr as usize, (addr + ln) as usize),
     );
     fc.set_usize_result(sp + 40, written);
 }
@@ -571,11 +580,14 @@ extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
     let id = fc.get_i32(sp + 8);
     let start = fc.get_i32(sp + 16);
     let end = fc.get_i32(sp + 24) + start;
-    // TODO Instead of pulling out addr and len and casting the memory inline
-    // let's look into getting mut_mem without tying the lifetime to fc
-    let (addr, len) = fc.mem();
-    let mem = unsafe { &mut slice::from_raw_parts_mut(addr, len)[start as usize..end as usize] };
-    let read = fc.shared_state().net_loop.read_stream(id as usize, mem);
+
+    let read = {
+        let shared_state = fc.shared_state_mut();
+        shared_state.net_loop.read_stream(
+            id as usize,
+            shared_state.mem.mut_mem_slice(start as usize, end as usize),
+        )
+    };
     fc.set_usize_result(sp + 40, read);
 }
 
@@ -801,11 +813,11 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
 
     {
         let instance = context.get_instance(&"go").unwrap();
-        let host_state = instance
+        let shared_state = instance
             .host_state()
             .downcast_mut::<SharedState>()
             .expect("not a thing");
-        host_state.definition = Some(definition);
+        shared_state.add_definition(definition);
     }
 
     let (argc, argv) = load_args_from_definition(args, definition);
@@ -847,51 +859,6 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::any::Any;
-
-    struct TestVMContext {
-        shared_state: Box<dyn Any>,
-        mem: Box<dyn Any>,
-    }
-
-    struct TestContext {
-        vmctx: *mut TestVMContext,
-        // place the testcontext here so that it has the same
-        // lifetime as the test context?
-        #[allow(dead_code)]
-        v: TestVMContext,
-    }
-
-    impl TestContext {
-        fn new(vmctx: *mut TestVMContext, v: TestVMContext) -> Self {
-            Self { vmctx, v }
-        }
-    }
-    impl ContextHelpers for TestContext {
-        fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
-            unsafe { &mut (&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
-        }
-        fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
-            unsafe { &(&mut *self.vmctx).mem.downcast_mut::<Vec<u8>>().unwrap()[start..end] }
-        }
-
-        fn shared_state_mut(&mut self) -> &mut SharedState {
-            unsafe {
-                (&mut *self.vmctx)
-                    .shared_state
-                    .downcast_mut::<SharedState>()
-                    .unwrap()
-            }
-        }
-        fn shared_state(&self) -> &SharedState {
-            &*unsafe {
-                (&mut *self.vmctx)
-                    .shared_state
-                    .downcast_mut::<SharedState>()
-                    .unwrap()
-            }
-        }
-    }
 
     #[test]
     fn test_args_and_ev() {
@@ -913,18 +880,4 @@ mod tests {
         assert_eq!(argv, 4184);
     }
 
-    #[test]
-    fn i32_get_and_set() {
-        let ss = SharedState::new();
-        let mem: Vec<u8> = vec![0; 100];
-        let mut vmc = TestVMContext {
-            shared_state: Box::new(ss),
-            mem: Box::new(mem),
-        };
-        let mut tc = TestContext::new(&mut vmc as *mut TestVMContext, vmc);
-        tc.set_i32(0, 2147483647);
-        assert_eq!(2147483647, tc.get_i32(0));
-        tc.set_i32(0, -2147483647);
-        assert_eq!(-2147483647, tc.get_i32(0));
-    }
 }

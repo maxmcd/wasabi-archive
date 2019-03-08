@@ -3,31 +3,60 @@ use js;
 use network;
 use network::NetLoop;
 use std::collections::{HashMap, VecDeque};
+use std::slice;
 use timeout_heap::ToHeap;
 use wasmtime_runtime::VMMemoryDefinition;
 
 #[derive(Debug)]
+pub struct Mem {
+    definition: Option<*mut VMMemoryDefinition>,
+}
+impl Mem {
+    fn new() -> Self {
+        Self { definition: None }
+    }
+    pub fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
+        unsafe {
+            let memory_def = &*self.definition.unwrap();
+            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
+        }
+    }
+    pub fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
+        unsafe {
+            let memory_def = &*self.definition.unwrap();
+            &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..end]
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct SharedState {
-    pub definition: Option<*mut VMMemoryDefinition>,
     pub exited: bool,
     pub net_loop: NetLoop,
     pub net_callback_id: i64,
     pub timeout_heap: ToHeap,
     pub call_queue: VecDeque<i64>,
     pub js: js::Js,
+    pub mem: Mem,
 }
 
 impl SharedState {
     pub fn new() -> Self {
         Self {
             timeout_heap: ToHeap::new(),
-            definition: None,
             exited: false,
+            mem: Mem::new(),
             net_loop: NetLoop::new(),
             net_callback_id: 0,
             js: js::Js::new().unwrap(),
             call_queue: VecDeque::new(),
         }
+    }
+    pub fn add_definition(&mut self, def: *mut VMMemoryDefinition) {
+        self.mem.definition = Some(def);
+    }
+    pub fn definition(&self) -> *mut VMMemoryDefinition {
+        self.mem.definition.unwrap()
     }
     fn recv_net_events(&mut self) -> Option<Vec<mio::event::Event>> {
         let mut events = Vec::new();
