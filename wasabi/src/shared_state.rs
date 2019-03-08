@@ -204,6 +204,8 @@ mod tests {
             let ms_2 = 15;
             ss.timeout_heap.add(ms_2);
 
+            let to_cancel_id = ss.timeout_heap.add(12);
+
             let ms = 5;
             ss.timeout_heap.add(ms);
 
@@ -216,6 +218,8 @@ mod tests {
             ss.add_pending_event(4, vec![]);
             ss.process_event_loop().unwrap();
             assert!(ss.call_queue.is_empty());
+
+            ss.timeout_heap.remove(to_cancel_id);
 
             let should_break = ss.process_event_loop().unwrap();
             println!("{:?}", timeout_timer.elapsed().unwrap());

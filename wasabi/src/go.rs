@@ -89,7 +89,6 @@ trait ContextHelpers {
         self.shared_state().js.value_length(target)
     }
     // TODO: return Result
-
     fn reflect_apply(
         &mut self,
         target: i64,
