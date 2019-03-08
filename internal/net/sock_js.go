@@ -386,8 +386,7 @@ func ListenTCP(network string, laddr *net.TCPAddr) (*TCPListener, error) {
 	}
 	bytes, _ := wasm.GetBytes(id) // id is ref if there's an error
 	err := errors.New(string(bytes))
-	// TODO: don't just pass a negative number
-	return &TCPListener{token: -1}, err
+	return nil, err
 }
 
 func Listen(network, addr string) (net.Listener, error) {

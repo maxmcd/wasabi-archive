@@ -54,9 +54,12 @@ pub struct ToHeap {
 }
 
 /// ToHeap stores timeouts and returns ids for them. Ids can be reused after
-/// they are delete. This struct is a bit of a frankenstein to get around
-/// implemeting a BinaryHeap with deletes. As we're just dealing with itegers
-/// it's likely easy to dramatically simplify this implementation
+/// they are deleted. This struct is a bit of a frankenstein to get around
+/// implemeting a BinaryHeap with deletes. Instead we catch expired items as
+/// they are popped and peeked. This means is_empty is only accurate after a
+/// call to clean_timeouts. It should be easy to dramatically simplify this
+/// implementation
+
 impl ToHeap {
     pub fn new() -> Self {
         Self {
