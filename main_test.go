@@ -227,9 +227,6 @@ func TestCloseWrite(t *testing.T) {
 		err = c.CloseWrite()
 	}
 	if err != nil {
-		// if perr := parseCloseError(err, true); perr != nil {
-		//     t.Error(perr)
-		// }
 		t.Fatal(err)
 	}
 	var b [1]byte

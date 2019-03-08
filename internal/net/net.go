@@ -111,8 +111,8 @@ func (l *TCPListener) Addr() net.Addr {
 	return l.tl.Addr()
 }
 
-func (l *TCPListener) SetDeadline() error {
-	return l.tl.SetDeadline()
+func (l *TCPListener) SetDeadline(t time.Time) error {
+	return l.tl.SetDeadline(t)
 }
 
 func (l *TCPListener) Accept() (net.Conn, error) {
