@@ -3,6 +3,7 @@ use mio;
 use mio::net;
 use slab::Slab;
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::result;
 use std::sync::mpsc;
@@ -125,8 +126,23 @@ impl NetLoop {
         let (stream, _) = self.get_listener_ref(id)?.accept()?;
         self.register_stream(stream)
     }
+    pub fn get_error(&mut self, id: usize) -> Result<Option<Error>> {
+        match self.slab.get(id) {
+            Some(ntcp) => match ntcp {
+                NetTcp::Listener(listener) => listener.take_error(),
+                NetTcp::Stream(stream) => stream.take_error(),
+            },
+            None => Err(Error::new(
+                ErrorKind::Other,
+                "Network object not found in slab",
+            )),
+        }
+    }
     pub fn local_addr(&self, i: usize) -> Result<SocketAddr> {
-        self.get_stream_ref(i)?.local_addr()
+        match self.slab_get(i)? {
+            NetTcp::Listener(listener) => listener.local_addr(),
+            NetTcp::Stream(stream) => stream.local_addr(),
+        }
     }
     pub fn peer_addr(&self, i: usize) -> Result<SocketAddr> {
         self.get_stream_ref(i)?.peer_addr()
@@ -137,43 +153,43 @@ impl NetLoop {
         }
         self.get_stream_ref(i)?.read(b)
     }
+    pub fn shutdown(&mut self, i: usize, how: Shutdown) -> Result<()> {
+        self.get_stream_ref(i)?.shutdown(how)
+    }
     pub fn write_stream(&self, i: usize, b: &[u8]) -> Result<usize> {
         self.get_stream_ref(i)?.write(b)
     }
-    pub fn close_stream(&mut self, i: usize) -> Result<()> {
+    pub fn close(&mut self, i: usize) -> Result<()> {
         if self.slab.contains(i) {
             self.slab.remove(i); // value is dropped and connection is closed
         };
         Ok(())
     }
-    pub fn close_listener(&mut self, i: usize) -> Result<()> {
-        if self.slab.contains(i) {
-            self.slab.remove(i); // value is dropped and connection is closed
-        };
-        Ok(())
+    fn slab_get(&self, i: usize) -> Result<&NetTcp> {
+        match self.slab.get(i) {
+            Some(ntcp) => Ok(ntcp),
+            None => Err(Error::new(
+                ErrorKind::Other,
+                "Network object not found in slab",
+            )),
+        }
     }
     fn get_listener_ref(&self, i: usize) -> Result<&mio::net::TcpListener> {
-        match match self.slab.get(i) {
-            Some(ntcp) => match ntcp {
-                NetTcp::Listener(listener) => Some(listener),
-                _ => None,
-            },
-            None => None,
-        } {
-            Some(ntcp) => Ok(ntcp),
-            None => Err(Error::new(ErrorKind::Other, "Listener not found for id")),
+        match self.slab_get(i)? {
+            NetTcp::Listener(listener) => Ok(listener),
+            _ => Err(Error::new(
+                ErrorKind::Other,
+                "Network object not found in slab",
+            )),
         }
     }
     fn get_stream_ref(&self, i: usize) -> Result<&mio::net::TcpStream> {
-        match match self.slab.get(i) {
-            Some(ntcp) => match ntcp {
-                NetTcp::Stream(s) => Some(s),
-                _ => None,
-            },
-            None => None,
-        } {
-            Some(ntcp) => Ok(ntcp),
-            None => Err(Error::new(ErrorKind::Other, "Stream not found for id")),
+        match self.slab_get(i)? {
+            NetTcp::Stream(s) => Ok(s),
+            _ => Err(Error::new(
+                ErrorKind::Other,
+                "Network object not found in slab",
+            )),
         }
     }
 }

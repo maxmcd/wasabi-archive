@@ -45,6 +45,9 @@ mod bytes;
 mod go;
 mod js;
 mod network;
+mod shared_state;
+mod timeout_heap;
+mod util;
 
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
