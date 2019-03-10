@@ -4,7 +4,7 @@ A webassembly runtime designed for multitenancy
 
 Wasabi is a webassembly runtime built using [Cranelift](https://github.com/cranestaion/cranelift) and [Wasmtime](https://github.com/cranestaion/wasmtime).
 
-Currently Wasabi runs Go programs compiled to webassembly and provides some access to underlying system resources. Go wasm progams rely on the browser context and [this execution file](https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js). Wasabi mocks out (almost) all of the functionality in this file with a few caveats:
+Currently Wasabi runs Go programs compiled to webassembly and provides some access to underlying system resources. Go wasm programs rely on the browser context and [this execution file](https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js). Wasabi mocks out (almost) all of the functionality in this file with a few caveats:
 
  - There is no filesystem access at the moment (other than writing to stdout)
  - No Go standard library networking functionality is supported. Limited networking is provided by [a separate library](https://godoc.org/github.com/maxmcd/wasabi)
@@ -49,6 +49,9 @@ cargo +nightly run --release -- ../programs/go-net-example/go-net-example.wasm
 
 The server should then spin up and you should see the logging output from the requests.
 
+## Sandboxing
+
+One of the goals of Wasabi is to provide a safe runtime to run untrusted code. The current implementation is presumed to be memory safe and is mostly safe otherwise due to a lack of implemented functionality. eg: there's no filesystem access. Most TCP networking functionality is implemented so there are no current restrictions on outbound tcp requests. Over time more functionality will be added to provide limited system resource access. cloudabi could be a worthwhile candidate for sandboxing, but ulimit and runtime-level constraints might be enough. 
 
 ## Roadmap
 
