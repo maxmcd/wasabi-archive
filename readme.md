@@ -2,7 +2,7 @@
 
 A webassembly runtime designed for multitenancy
 
-Wasabi is a webassembly runtime built using [Cranelift](https://github.com/cranestaion/cranelift) and [Wasmtime](https://github.com/cranestaion/wasmtime).
+Wasabi is a webassembly runtime built using [Cranelift](https://github.com/cranestation/cranelift) and [Wasmtime](https://github.com/cranestation/wasmtime).
 
 Currently Wasabi runs Go programs compiled to webassembly and provides some access to underlying system resources. Go wasm programs rely on the browser context and [this execution file](https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js). Wasabi mocks out (almost) all of the functionality in this file with a few caveats:
 
