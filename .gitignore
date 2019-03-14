@@ -1,8 +1,8 @@
 *.wasm
-*.wat
 .DS_Store
 cmd/ts-asm/build
 node_modules
 wasabi/target
 todo.md
 names.md
+gantry

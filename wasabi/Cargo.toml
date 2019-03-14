@@ -4,10 +4,10 @@ version = "0.0.1"
 authors = ["maxmcd <m@xmcd.me>"]
 
 [dependencies]
-cranelift-codegen = "0.28.0"
-cranelift-entity = "0.28.0"
-cranelift-native = "0.28.0"
-cranelift-wasm = "0.28.0"
+cranelift-codegen = "0.29.0"
+cranelift-entity = "0.29.0"
+cranelift-native = "0.29.0"
+cranelift-wasm = "0.29.0"
 file-per-thread-logger = "0.1.1"
 mio = "0.6"
 slab = "0.4.2"
@@ -19,3 +19,10 @@ wasmtime-environ = { git = "https://github.com/cranestation/wasmtime" }
 wasmtime-jit = { git = "https://github.com/cranestation/wasmtime" }
 wasmtime-obj = { git = "https://github.com/cranestation/wasmtime" }
 wasmtime-runtime = { git = "https://github.com/cranestation/wasmtime" }
+# wasmtime-environ = { path = "../../../cranestation/wasmtime/lib/environ" }
+# wasmtime-jit = { path = "../../../cranestation/wasmtime/lib/jit" }
+# wasmtime-obj = { path = "../../../cranestation/wasmtime/lib/obj" }
+# wasmtime-runtime = { path = "../../../cranestation/wasmtime/lib/runtime" }
+
+[profile.release]
+debug = true

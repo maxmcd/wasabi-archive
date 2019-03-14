@@ -1,33 +1,11 @@
 use failure::Error;
 use js;
+use mem::Mem;
 use network;
 use network::NetLoop;
 use std::collections::{HashMap, VecDeque};
-use std::slice;
 use timeout_heap::ToHeap;
 use wasmtime_runtime::VMMemoryDefinition;
-
-#[derive(Debug)]
-pub struct Mem {
-    definition: Option<*mut VMMemoryDefinition>,
-}
-impl Mem {
-    fn new() -> Self {
-        Self { definition: None }
-    }
-    pub fn mut_mem_slice(&mut self, start: usize, end: usize) -> &mut [u8] {
-        unsafe {
-            let memory_def = &*self.definition.unwrap();
-            &mut slice::from_raw_parts_mut(memory_def.base, memory_def.current_length)[start..end]
-        }
-    }
-    pub fn mem_slice(&self, start: usize, end: usize) -> &[u8] {
-        unsafe {
-            let memory_def = &*self.definition.unwrap();
-            &slice::from_raw_parts(memory_def.base, memory_def.current_length)[start..end]
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct SharedState {
@@ -54,9 +32,6 @@ impl SharedState {
     }
     pub fn add_definition(&mut self, def: *mut VMMemoryDefinition) {
         self.mem.definition = Some(def);
-    }
-    pub fn definition(&self) -> *mut VMMemoryDefinition {
-        self.mem.definition.unwrap()
     }
     fn recv_net_events(&mut self) -> Option<Vec<mio::event::Event>> {
         let mut events = Vec::new();

@@ -353,9 +353,6 @@ func TestReadTimeoutUnblocksRead(t *testing.T) {
 		go func() {
 			defer close(errc)
 			go func() {
-				// TODO: find a better way to wait
-				// until we're blocked in the cs.Read
-				// call below. Sleep is lame.
 				time.Sleep(100 * time.Millisecond)
 
 				// Interrupt the upcoming Read, unblocking it:

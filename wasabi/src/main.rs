@@ -44,6 +44,7 @@ extern crate wasmtime_runtime;
 mod bytes;
 mod go;
 mod js;
+mod mem;
 mod network;
 mod shared_state;
 mod timeout_heap;
