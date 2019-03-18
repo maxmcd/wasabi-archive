@@ -120,9 +120,6 @@ impl NetLoop {
         Ok(id)
     }
     pub fn tcp_accept(&mut self, id: usize) -> Result<usize> {
-        if let Some(err) = self.get_listener_ref(id)?.take_error()? {
-            println!("accept error {:?}", err);
-        }
         let (stream, _) = self.get_listener_ref(id)?.accept()?;
         self.register_stream(stream)
     }

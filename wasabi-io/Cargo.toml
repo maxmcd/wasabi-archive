@@ -1,0 +1,13 @@
+[package]
+name = "wasabi-io"
+version = "0.1.0"
+authors = ["maxmcd <max.t.mcdonnell@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+tokio = "0.1.17"
+futures = "0.1.25"
+mio = "0.6"
+failure = "0.1.5"
+slab = "0.4.2"
+trust-dns-resolver = "0.10.3"
