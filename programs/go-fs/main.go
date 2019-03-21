@@ -1,23 +1,12 @@
 package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	"io/ioutil"
 	"os"
 )
 
 func main() {
-	b := make([]byte, 10)
-	_, err := rand.Read(b)
-	if err != nil {
-		panic(err)
-		return
-	}
-	// The slice should now contain random bytes instead of only zeroes.
-	fmt.Println(b)
-	fmt.Println("hello")
-
 	fi, err := os.Stat("/")
 	fmt.Println(fi, err)
 	fmt.Println(os.Getwd())

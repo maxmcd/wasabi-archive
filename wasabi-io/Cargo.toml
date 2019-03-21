@@ -5,9 +5,13 @@ authors = ["maxmcd <max.t.mcdonnell@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-tokio = "0.1.17"
+failure = "0.1.5"
 futures = "0.1.25"
 mio = "0.6"
-failure = "0.1.5"
+path-dedot = "1.1.9"
 slab = "0.4.2"
+tokio = "0.1.17"
 trust-dns-resolver = "0.10.3"
+
+[dev-dependencies]
+tempfile = "3.0.7"

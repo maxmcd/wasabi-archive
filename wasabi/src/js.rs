@@ -206,6 +206,7 @@ impl Js {
         let fs = js.add_object(global, "fs")?;
         js.add_object(fs, "write")?;
         js.add_object(fs, "open")?;
+        js.add_object(fs, "stat")?;
         js.add_object(fs, "read")?;
         js.add_object(fs, "fsync")?;
         let constants = js.add_object(fs, "constants")?;

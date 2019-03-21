@@ -138,6 +138,29 @@ trait ContextHelpers {
                 );
                 Some((0, true))
             }
+            ("stat", "fs") => {
+                // [
+                //     path:       (35, false),
+                //     callback?:   (33, true),
+                let value = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::String(s) => (s.to_owned()),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                let (address, len) = {
+                    match self.js().slab_get(argument_list[1].0).unwrap() {
+                        js::Value::Memory { address, len } => (*address as usize, *len as usize),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                println!("{:?} {:?}", argument_list, value);
+                Some((0, true))
+            }
             ("write", "fs") => {
                 // [
                 //     fd:       (1, false),

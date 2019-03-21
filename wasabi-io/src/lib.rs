@@ -1,14 +1,20 @@
 use failure::{err_msg, Error};
 use futures::future;
-use futures::future::Future;
+use futures::Future;
 use mio;
 use mio::net::{TcpListener, TcpStream};
+use path_dedot::ParseDot;
 use slab::Slab;
-use std::io::{Read, Write};
+use std;
+use std::env::current_dir;
+use std::fs;
+use std::io::{Read, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::{thread, time};
 use tokio;
+use tokio::fs::{metadata, OpenOptions};
 use tokio::runtime::Runtime;
 use trust_dns_resolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
@@ -49,87 +55,291 @@ pub fn addr_to_bytes(addr: SocketAddr, b: &mut [u8]) -> Result<(), Error> {
 }
 
 #[derive(Debug)]
-pub enum Responses {
-    Ips(trust_dns_resolver::lookup_ip::LookupIp),
+pub enum Response {
+    Error {
+        id: i64,
+        msg: String,
+    },
+    Ips {
+        id: i64,
+        ips: trust_dns_resolver::lookup_ip::LookupIp,
+    },
+    Metadata {
+        id: i64,
+        md: fs::Metadata,
+    },
+    FileRef {
+        id: i64,
+        fd: usize,
+    },
+    Read {
+        id: i64,
+        len: usize,
+        buf: Vec<u8>,
+    },
+    Success {
+        id: i64,
+    },
+    File {
+        id: i64,
+        file: tokio::fs::File,
+    },
     Event(mio::event::Event),
 }
 
+impl Response {
+    pub fn id(&self) -> Option<i64> {
+        match self {
+            Response::File { id, .. } => Some(*id),
+            Response::Success { id, .. } => Some(*id),
+            Response::Read { id, .. } => Some(*id),
+            Response::Error { id, .. } => Some(*id),
+            Response::Ips { id, .. } => Some(*id),
+            Response::Metadata { id, .. } => Some(*id),
+            Response::FileRef { id, .. } => Some(*id),
+            Response::Event(_) => None,
+        }
+    }
+}
+
+trait ToResponse {
+    fn to_response(self, id: i64) -> Response;
+}
+
+impl ToResponse for tokio::fs::File {
+    fn to_response(self, id: i64) -> Response {
+        Response::File { file: self, id }
+    }
+}
+
+impl ToResponse for (tokio::fs::File, Vec<u8>, usize) {
+    fn to_response(self, id: i64) -> Response {
+        Response::Read {
+            buf: self.1,
+            id,
+            len: self.2,
+        }
+    }
+}
+
+impl ToResponse for () {
+    fn to_response(self, id: i64) -> Response {
+        Response::Success { id }
+    }
+}
+
+impl ToResponse for (tokio::fs::File, Vec<u8>) {
+    fn to_response(self, id: i64) -> Response {
+        Response::Success { id }
+    }
+}
+
+impl ToResponse for fs::Metadata {
+    fn to_response(self, id: i64) -> Response {
+        Response::Metadata { md: self, id }
+    }
+}
+
+fn send_result(
+    id: i64,
+    es: mpsc::Sender<Response>,
+    result: Result<impl ToResponse, std::io::Error>,
+) -> impl Future<Item = (), Error = ()> {
+    match result {
+        Err(err) => es
+            .send(Response::Error {
+                msg: err.to_string(),
+                id,
+            })
+            .unwrap(),
+        Ok(tr) => es.send(tr.to_response(id)).unwrap(),
+    };
+    future::ok(())
+}
+
 #[derive(Debug)]
-enum NetTcp {
+enum Tcp {
     Listener(TcpListener),
     Stream(TcpStream),
 }
 
 #[derive(Debug)]
-pub struct NetLoop {
-    runtime: Runtime,
-    resolver: AsyncResolver,
-    poll: Arc<mio::Poll>,
+pub struct IOLoop {
+    event_receiver: mpsc::Receiver<Response>,
+    event_sender: mpsc::Sender<Response>,
     pub is_listening: bool,
-    slab: Slab<NetTcp>,
-    event_receiver: mpsc::Receiver<Result<Responses, Error>>,
-    event_sender: mpsc::Sender<Result<Responses, Error>>,
+    path: PathBuf,
+    runtime_cwd: PathBuf,
+    poll: Arc<mio::Poll>,
+    resolver: AsyncResolver,
+    runtime: Runtime,
+    slab: Slab<Tcp>,
+    files: Slab<std::fs::File>,
 }
 
-impl Default for NetLoop {
+impl Default for IOLoop {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NetLoop {
+impl IOLoop {
     pub fn new() -> Self {
         let poll = Arc::new(mio::Poll::new().unwrap());
         let (event_sender, event_receiver) = mpsc::channel();
         let es = event_sender.clone();
         let t_poll = poll.clone();
+
+        // Spawn a thread for mio events
         thread::spawn(move || {
             let mut events = mio::Events::with_capacity(1024);
             loop {
                 t_poll.poll(&mut events, None).unwrap();
                 for event in events.iter() {
-                    es.send(Ok(Responses::Event(event))).unwrap();
+                    if es.send(Response::Event(event)).is_err() {
+                        // the receiver has been dropped, so we can
+                        // proceed with quitting
+                        break;
+                    }
                 }
             }
         });
 
+        // TODO: put more opinions into the runtime. Likely don't want thread
+        // count to be numprocs
         let mut runtime = Runtime::new().unwrap();
         let (resolver, background) =
             AsyncResolver::new(ResolverConfig::default(), ResolverOpts::default());
         runtime.spawn(background);
+
         Self {
-            slab: Slab::new(),
-            runtime,
-            is_listening: false,
-            poll,
-            resolver,
             event_receiver,
             event_sender,
+            is_listening: false,
+            path: PathBuf::from("/"),
+            poll,
+            resolver,
+            runtime_cwd: current_dir().unwrap(),
+            runtime,
+            slab: Slab::new(),
+            files: Slab::new(),
         }
     }
-    pub fn lookup_ip(&mut self, addr: &str) {
+    pub fn metadata(&mut self, id: i64, name: String) {
+        let es = self.event_sender.clone();
+        self.runtime
+            .spawn(metadata(name).then(move |result| send_result(id, es, result)));
+    }
+    pub fn lookup_ip(&mut self, id: i64, addr: &str) {
         let es = self.event_sender.clone();
         self.runtime
             .spawn(self.resolver.lookup_ip(addr).then(move |result| {
                 match result {
-                    Err(err) => es.send(Err(err.into())).unwrap(),
-                    Ok(lookup) => es.send(Ok(Responses::Ips(lookup))).unwrap(),
+                    Err(err) => es
+                        .send(Response::Error {
+                            msg: err.to_string(),
+                            id,
+                        })
+                        .unwrap(),
+                    Ok(ips) => es.send(Response::Ips { ips, id }).unwrap(),
                 };
                 future::ok(())
             }));
     }
-    pub fn try_recv(&mut self) -> Result<Responses, Error> {
-        self.event_receiver.try_recv()?
+    pub fn cwd(&self) -> &str {
+        self.path.to_str().unwrap()
     }
-    pub fn recv(&mut self) -> Result<Responses, Error> {
-        self.event_receiver.recv()?
+    pub fn chdir(&mut self, path: &str) {
+        self.path = self.resolve_path(path);
     }
-    pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<Responses, Error> {
-        self.event_receiver.recv_timeout(timeout)?
+    fn resolve_path(&self, path: &str) -> PathBuf {
+        // https://github.com/magiclen/path-dedot/blob/master/src/unix.rs
+        // this unwrap actually seems 100% safe
+        self.path.join(PathBuf::from(path)).parse_dot().unwrap()
+    }
+    fn real_path(&self, path: &str) -> PathBuf {
+        self.runtime_cwd.join(
+            PathBuf::from(String::from(".") + self.resolve_path(path).to_str().unwrap())
+                .parse_dot()
+                .unwrap(),
+        )
+    }
+    pub fn fs_mkdir(&mut self, id: i64, path: String) {
+        let es = self.event_sender.clone();
+        self.runtime.spawn(
+            tokio::fs::create_dir(self.real_path(&path))
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+    pub fn fs_close(&mut self, fd: usize) {
+        self.files.remove(fd);
+    }
+    pub fn fs_write(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
+        // TODO: should be able to pass around a lifetime for vec that
+        // allows us to send it without allocating a new object
+        let f = self.files.get(fd).unwrap().try_clone().unwrap();
+        let tf = tokio::fs::File::from_std(f);
+        let es = self.event_sender.clone();
+        self.runtime.spawn(
+            tf.seek(SeekFrom::Start(0)) // TODO: pass this value to the function. also race conditions?
+                .and_then(|(tf, _)| tokio::io::write_all(tf, buf))
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+    pub fn fs_read(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
+        // TODO: should be able to pass around a lifetime for vec that
+        // allows us to send it without allocating a new object
+        let f = self.files.get(fd).unwrap().try_clone().unwrap();
+        let tf = tokio::fs::File::from_std(f);
+        let es = self.event_sender.clone();
+        self.runtime.spawn(
+            tf.seek(SeekFrom::Start(0)) // TODO: pass this value to the function. also race conditions?
+                .and_then(|(tf, _)| tokio::io::read(tf, buf))
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+    pub fn fs_open(&mut self, id: i64, path: String, _openmode: i64, _perm: i32) {
+        let es = self.event_sender.clone();
+        // TODO openmode and perm
+        self.runtime.spawn(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+    fn recv_wrapper(&mut self, r: Result<Response, Error>) -> Result<Response, Error> {
+        if let Ok(resp) = r {
+            if let Response::File { id, file } = resp {
+                // keep the file and return a virtual fd and the id
+                Ok(Response::FileRef {
+                    fd: self.files.insert(file.into_std()),
+                    id,
+                })
+            } else {
+                Ok(resp)
+            }
+        } else {
+            r
+        }
+    }
+    pub fn try_recv(&mut self) -> Result<Response, Error> {
+        self.recv_wrapper(self.event_receiver.try_recv().map_err(|e| e.into()))
+    }
+    pub fn recv(&mut self) -> Result<Response, Error> {
+        self.recv_wrapper(self.event_receiver.recv().map_err(|e| e.into()))
+    }
+    pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<Response, Error> {
+        self.recv_wrapper(
+            self.event_receiver
+                .recv_timeout(timeout)
+                .map_err(|e| e.into()),
+        )
     }
     pub fn tcp_listen(&mut self, addr: &SocketAddr) -> Result<usize, Error> {
         let listener = TcpListener::bind(addr)?;
-        let id = self.slab.insert(NetTcp::Listener(listener));
+        let id = self.slab.insert(Tcp::Listener(listener));
         self.poll.register(
             self.get_listener_ref(id)?,
             mio::Token(id),
@@ -146,7 +356,7 @@ impl NetLoop {
         self.register_stream(stream)
     }
     fn register_stream(&mut self, stream: TcpStream) -> Result<usize, Error> {
-        let id = self.slab.insert(NetTcp::Stream(stream));
+        let id = self.slab.insert(Tcp::Stream(stream));
         self.poll.register(
             self.get_stream_ref(id)?,
             mio::Token(id),
@@ -161,14 +371,14 @@ impl NetLoop {
     }
     pub fn get_error(&mut self, id: usize) -> Result<Option<std::io::Error>, Error> {
         match self.slab_get(id)? {
-            NetTcp::Listener(listener) => listener.take_error().map_err(|e| e.into()),
-            NetTcp::Stream(stream) => stream.take_error().map_err(|e| e.into()),
+            Tcp::Listener(listener) => listener.take_error().map_err(|e| e.into()),
+            Tcp::Stream(stream) => stream.take_error().map_err(|e| e.into()),
         }
     }
     pub fn local_addr(&self, i: usize) -> Result<SocketAddr, Error> {
         match self.slab_get(i)? {
-            NetTcp::Listener(listener) => listener.local_addr().map_err(|e| e.into()),
-            NetTcp::Stream(stream) => stream.local_addr().map_err(|e| e.into()),
+            Tcp::Listener(listener) => listener.local_addr().map_err(|e| e.into()),
+            Tcp::Stream(stream) => stream.local_addr().map_err(|e| e.into()),
         }
     }
     pub fn peer_addr(&self, i: usize) -> Result<SocketAddr, Error> {
@@ -183,13 +393,13 @@ impl NetLoop {
     pub fn write_stream(&self, i: usize, b: &[u8]) -> Result<usize, Error> {
         self.get_stream_ref(i)?.write(b).map_err(|e| e.into())
     }
-    pub fn close(&mut self, i: usize) -> Result<(), Error> {
+    pub fn close_conn(&mut self, i: usize) -> Result<(), Error> {
         if self.slab.contains(i) {
             self.slab.remove(i); // value is dropped and connection is closed
         };
         Ok(())
     }
-    fn slab_get(&self, i: usize) -> Result<&NetTcp, Error> {
+    fn slab_get(&self, i: usize) -> Result<&Tcp, Error> {
         match self.slab.get(i) {
             Some(ntcp) => Ok(ntcp),
             None => Err(err_msg("Network object not found in slab")),
@@ -197,13 +407,13 @@ impl NetLoop {
     }
     fn get_listener_ref(&self, i: usize) -> Result<&TcpListener, Error> {
         match self.slab_get(i)? {
-            NetTcp::Listener(listener) => Ok(listener),
+            Tcp::Listener(listener) => Ok(listener),
             _ => Err(err_msg("Network object not found in slab")),
         }
     }
     fn get_stream_ref(&self, i: usize) -> Result<&TcpStream, Error> {
         match self.slab_get(i)? {
-            NetTcp::Stream(s) => Ok(s),
+            Tcp::Stream(s) => Ok(s),
             _ => Err(err_msg("Network object not found in slab")),
         }
     }
@@ -212,16 +422,82 @@ impl NetLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tempfile::Builder;
 
     pub fn as_u16_le(array: &[u8]) -> u16 {
         u16::from(array[0]) | (u16::from(array[1]) << 8)
     }
 
     #[test]
-    fn it_works() {
-        let mut nl = NetLoop::new();
-        nl.lookup_ip("www.google.com.");
-        println!("Got {:?}", nl.event_receiver.recv().unwrap());
+    fn file_io() {
+        let mut nl = IOLoop::new();
+        let file = Builder::new().tempfile_in(nl.real_path(".")).unwrap();
+        let path = file
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let cb_id = 200;
+        nl.fs_open(cb_id, path, 0, 0);
+
+        let fd = if let Response::FileRef { fd, id } = nl.recv().unwrap() {
+            assert_eq!(cb_id, id);
+            fd
+        } else {
+            panic!("Wrong type returned");
+        };
+
+        nl.fs_write(0, fd, "Hello".as_bytes().to_vec());
+        nl.recv().unwrap();
+
+        let buf = vec![0; 100];
+        let cb_id = 20;
+        nl.fs_read(cb_id, fd, buf);
+
+        if let Response::Read { buf, id, len } = nl.recv().unwrap() {
+            assert_eq!(len, "Hello".len());
+            assert_eq!(&buf[..len], "Hello".as_bytes());
+            assert_eq!(cb_id, id);
+        } else {
+            panic!("Wrong type returned");
+        };
+    }
+
+    #[test]
+    fn realpath() {
+        let mut nl = IOLoop::new();
+        nl.chdir("/foo");
+        let mut cd = current_dir().unwrap();
+        cd.push("foo");
+        assert_eq!(nl.real_path("."), cd);
+    }
+
+    #[test]
+    fn ensure_chroot() {
+        let mut nl = IOLoop::new();
+        assert_eq!("/", nl.cwd());
+        nl.chdir("../../../");
+        assert_eq!("/", nl.cwd());
+    }
+
+    #[test]
+    fn lookup_ip_localhost() {
+        let mut nl = IOLoop::new();
+        nl.lookup_ip(0, "localhost");
+        if let Response::Ips { ips, id } = nl.recv().unwrap() {
+            assert_eq!(id, 0);
+            if let IpAddr::V4(ip) = ips.iter().next().unwrap() {
+                assert_eq!(ip, Ipv4Addr::new(127, 0, 0, 1));
+            } else {
+                panic!("ipv4 expected");
+            }
+        } else {
+            panic!("expected Response::Event");
+        }
     }
 
     #[test]
@@ -237,13 +513,15 @@ mod tests {
 
     #[test]
     fn listen_connect_read_write() {
-        let mut nl = NetLoop::new();
-        let listener = nl.tcp_listen(&"127.0.0.1:34254".parse().unwrap()).unwrap();
-        let conn = nl.tcp_connect(&"127.0.0.1:34254".parse().unwrap()).unwrap();
+        let mut nl = IOLoop::new();
+        let listener = nl.tcp_listen(&"127.0.0.1:0".parse().unwrap()).unwrap();
+        let conn = nl
+            .tcp_connect(&nl.get_listener_ref(listener).unwrap().local_addr().unwrap())
+            .unwrap();
 
         let to_write = [0, 1, 2, 3, 4, 5, 6, 7, 8];
         loop {
-            if let Responses::Event(event) = nl.event_receiver.recv().unwrap().unwrap() {
+            if let Response::Event(event) = nl.recv().unwrap() {
                 if event.token().0 == conn && event.readiness().is_writable() {
                     nl.write_stream(event.token().0, &to_write).unwrap();
                 } else if event.token().0 == listener && event.readiness().is_readable() {
@@ -258,7 +536,7 @@ mod tests {
                     continue;
                 }
             } else {
-                panic!("no");
+                panic!("expected a Response::Event!");
             }
         }
     }
