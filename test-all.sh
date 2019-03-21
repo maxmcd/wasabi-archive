@@ -8,3 +8,4 @@ go1.12beta1 test
 ./programs/go-test-wasabi.sh
 ./programs/go-lib-only/run.sh
 cd wasabi && RUST_BACKTRACE=full cargo +nightly test --release -- --nocapture
+cd ../wasabi-io && RUST_BACKTRACE=full cargo +nightly test --release -- --nocapture
