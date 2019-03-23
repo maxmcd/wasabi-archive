@@ -182,7 +182,8 @@ impl Js {
             static_strings: HashMap::new(),
         };
         // These initial indexes must map up with Go's underlying assumptions
-        // https://github.com/golang/go/blob/8e50e48f4/src/syscall/js/js.go#L75-L83
+        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/js/js.go#L75-L83
+        // https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js#L370-L377
         js.slab_add(Value::NaN); //0 NaN
         js.slab_add(Value::Int(0)); //1 0
         js.slab_add(Value::Null); //2 null
@@ -211,12 +212,14 @@ impl Js {
         js.add_object(fs, "fsync")?;
         let constants = js.add_object(fs, "constants")?;
 
-        js.add_object_value(constants, "O_WRONLY", (-1, false))?;
-        js.add_object_value(constants, "O_RDWR", (-1, false))?;
-        js.add_object_value(constants, "O_CREAT", (-1, false))?;
-        js.add_object_value(constants, "O_TRUNC", (-1, false))?;
-        js.add_object_value(constants, "O_APPEND", (-1, false))?;
-        js.add_object_value(constants, "O_EXCL", (-1, false))?;
+        // TODO: pass values from wasabi-io
+        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/syscall_js.go#L103-L112
+        js.add_object_value(constants, "O_WRONLY", (1, false))?;
+        js.add_object_value(constants, "O_RDWR", (2, false))?;
+        js.add_object_value(constants, "O_CREAT", (64, false))?;
+        js.add_object_value(constants, "O_TRUNC", (512, false))?;
+        js.add_object_value(constants, "O_APPEND", (1024, false))?;
+        js.add_object_value(constants, "O_EXCL", (128, false))?;
 
         let crypto = js.add_object(global, "crypto")?;
         js.add_object(crypto, "getRandomValues")?;
@@ -242,7 +245,7 @@ impl Js {
 
         let date = js.add_object(global, "Date")?;
         // this would be a function on a new Date() but we'll just make it a
-        // function on the global object to avoid allocating a item
+        // function on the global object to avoid allocating an item
         js.add_object(date, "getTimezoneOffset")?;
 
         Ok(js)
@@ -252,7 +255,6 @@ impl Js {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use rand::{thread_rng, Rng};
 
     #[test]
     fn store_and_load_fuzz() {
@@ -265,20 +267,6 @@ mod tests {
 
         // not for refs
         assert_eq!((-2147483639, true), load_value(&store_value((big, true))));
-
-        // // fuzzz
-        // loop {
-        //     let mut data = [0; 8];
-        //     thread_rng().fill(&mut data);
-        //     let result = store_value(load_value(&data));
-        //     if result[0..4] != data[0..4] {
-        //         panic!("{:?}", data);
-        //     }
-        //     // 0x7FF80000
-        //     if result[4..8] != [0, 0, 248, 127] {
-        //         assert_eq!(result, data);
-        //     }
-        // }
     }
 
     #[test]

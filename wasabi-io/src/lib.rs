@@ -20,6 +20,13 @@ use trust_dns_resolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::AsyncResolver;
 
+pub const O_WRONLY: i64 = 1;
+pub const O_RDWR: i64 = 2;
+pub const O_CREAT: i64 = 64;
+pub const O_TRUNC: i64 = 512;
+pub const O_APPEND: i64 = 1024;
+pub const O_EXCL: i64 = 128;
+
 pub fn event_to_ints(event: &mio::Event) -> ((i64, i64)) {
     // 0 << 0 | 1 << 1 | 0 << 2 | 1 << 3
 
@@ -128,6 +135,18 @@ impl ToResponse for () {
     }
 }
 
+impl ToResponse for (tokio::io::Stdout, Vec<u8>) {
+    fn to_response(self, id: i64) -> Response {
+        Response::Success { id }
+    }
+}
+
+impl ToResponse for (tokio::io::Stderr, Vec<u8>) {
+    fn to_response(self, id: i64) -> Response {
+        Response::Success { id }
+    }
+}
+
 impl ToResponse for (tokio::fs::File, Vec<u8>) {
     fn to_response(self, id: i64) -> Response {
         Response::Success { id }
@@ -205,9 +224,11 @@ impl IOLoop {
             }
         });
 
-        // TODO: put more opinions into the runtime. Likely don't want thread
-        // count to be numprocs
-        let mut runtime = Runtime::new().unwrap();
+        // let's guarantee order for now, we can make performance changes later
+        let mut runtime = tokio::runtime::Builder::new()
+            .core_threads(1)
+            .build()
+            .unwrap();
         let (resolver, background) =
             AsyncResolver::new(ResolverConfig::default(), ResolverOpts::default());
         runtime.spawn(background);
@@ -274,6 +295,20 @@ impl IOLoop {
     pub fn fs_close(&mut self, fd: usize) {
         self.files.remove(fd);
     }
+    pub fn stderr(&mut self, id: i64, buf: Vec<u8>) {
+        let es = self.event_sender.clone();
+        self.runtime.spawn(
+            tokio::io::write_all(tokio::io::stderr(), buf)
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+    pub fn stdout(&mut self, id: i64, buf: Vec<u8>) {
+        let es = self.event_sender.clone();
+        self.runtime.spawn(
+            tokio::io::write_all(tokio::io::stdout(), buf)
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
     pub fn fs_write(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
         // TODO: should be able to pass around a lifetime for vec that
         // allows us to send it without allocating a new object
@@ -298,13 +333,28 @@ impl IOLoop {
                 .then(move |result| send_result(id, es, result)),
         );
     }
-    pub fn fs_open(&mut self, id: i64, path: String, _openmode: i64, _perm: i32) {
+    fn open_options(openmode: i64) -> OpenOptions {
+        let (read, write) = if openmode & O_RDWR > 0 {
+            (true, true)
+        } else if openmode & O_WRONLY > 0 {
+            (false, true)
+        } else {
+            (true, false)
+        };
+
+        OpenOptions::new()
+            .read(read)
+            .write(write)
+            .append(openmode & O_APPEND > 0)
+            .create(openmode & O_CREAT > 0)
+            .truncate(openmode & O_TRUNC > 0)
+            .clone()
+    }
+    pub fn fs_open(&mut self, id: i64, path: String, openmode: i64, _perm: i32) {
         let es = self.event_sender.clone();
-        // TODO openmode and perm
+
         self.runtime.spawn(
-            OpenOptions::new()
-                .read(true)
-                .write(true)
+            IOLoop::open_options(openmode)
                 .open(path)
                 .then(move |result| send_result(id, es, result)),
         );
@@ -442,7 +492,7 @@ mod tests {
             .to_string();
 
         let cb_id = 200;
-        nl.fs_open(cb_id, path, 0, 0);
+        nl.fs_open(cb_id, path, O_RDWR, 0);
 
         let fd = if let Response::FileRef { fd, id } = nl.recv().unwrap() {
             assert_eq!(cb_id, id);
@@ -474,6 +524,26 @@ mod tests {
         let mut cd = current_dir().unwrap();
         cd.push("foo");
         assert_eq!(nl.real_path("."), cd);
+    }
+
+    #[test]
+    fn stdio() {
+        let mut nl = IOLoop::new();
+        nl.stdout(0, "Hello stdout\n".as_bytes().to_vec());
+        nl.stderr(1, "Hello stderr\n".as_bytes().to_vec());
+        println!("I should be first");
+        // should confirm printing happened
+
+        if let Response::Success { id } = nl.recv().unwrap() {
+            assert_eq!(0, id);
+        } else {
+            panic!("Wrong type returned");
+        };
+        if let Response::Success { id } = nl.recv().unwrap() {
+            assert_eq!(1, id);
+        } else {
+            panic!("Wrong type returned");
+        };
     }
 
     #[test]
