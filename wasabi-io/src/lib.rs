@@ -574,8 +574,12 @@ mod tests {
     #[test]
     fn stdio() {
         let mut nl = IOLoop::new();
+        // This is still not guaranteed to run sequentially even with a single
+        // thread in the runtime. Not meaningfully checking callback ids for
+        // now
+
         nl.stdout(0, "Hello stdout\n".as_bytes().to_vec());
-        nl.stderr(1, "Hello stderr\n".as_bytes().to_vec());
+        nl.stderr(0, "Hello stderr\n".as_bytes().to_vec());
         println!("I should be first");
         // should confirm printing happened
 
@@ -585,7 +589,7 @@ mod tests {
             panic!("Wrong type returned");
         };
         if let Response::Success { id } = nl.recv().unwrap() {
-            assert_eq!(1, id);
+            assert_eq!(0, id);
         } else {
             panic!("Wrong type returned");
         };
