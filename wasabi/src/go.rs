@@ -4,10 +4,9 @@ use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
-use failure::{Error, Fail};
+use failure::Error;
 use js;
 use mem::{Actions, Mem};
-use network::addr_to_bytes;
 use rand::{thread_rng, Rng};
 use shared_state::SharedState;
 use std::cell::RefCell;
@@ -16,9 +15,10 @@ use std::net;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{io, slice, str};
+use std::{slice, str};
 use target_lexicon::HOST;
 use util::epoch_ns;
+use wasabi_io::addr_to_bytes;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
 use wasmtime_jit::{ActionOutcome, Compiler, Context, InstantiationError, RuntimeValue};
@@ -138,6 +138,20 @@ trait ContextHelpers {
                 );
                 Some((0, true))
             }
+            ("open", "fs") => {
+                let value = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::String(s) => (s.to_owned()),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+
+                println!("fs open {:?} {:?}", argument_list, value);
+                // [(55, true), (1, true), (1, true), (53, true)
+                Some((0, true))
+            }
             ("stat", "fs") => {
                 // [
                 //     path:       (35, false),
@@ -238,7 +252,7 @@ trait ContextHelpers {
         let reference = self.store_value_bytes(byte_references);
         self.mem_mut().set_i32(addr, reference);
     }
-    fn set_usize_result(&mut self, addr: i32, result: io::Result<usize>) {
+    fn set_usize_result(&mut self, addr: i32, result: Result<usize, Error>) {
         match result {
             Ok(value) => {
                 self.mem_mut().set_i32(addr, value as i32);
@@ -250,7 +264,7 @@ trait ContextHelpers {
             }
         }
     }
-    fn set_error(&mut self, addr: i32, err: &Fail) {
+    fn set_error(&mut self, addr: i32, err: &Error) {
         self.store_string(addr, err.to_string())
     }
     fn store_value_bytes(&mut self, b: Vec<u8>) -> i32 {
@@ -328,7 +342,7 @@ extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
         .js
         .reflect_set(target, property_key, value)
     {
-        fc.set_error(sp, err.as_fail())
+        fc.set_error(sp, &err)
     };
 }
 
@@ -452,7 +466,10 @@ extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let addr = fc.mem().get_string(sp + 8).to_owned(); // TODO errant allocation for the borrow checker
-    match &addr.parse() {
+    match &addr
+        .parse()
+        .map_err(|e: net::AddrParseError| -> Error { e.into() })
+    {
         Ok(addr) => {
             let id = fc.shared_state_mut().net_loop.tcp_listen(addr);
             fc.set_usize_result(sp + 24, id);
@@ -473,7 +490,10 @@ extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
 extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let addr = fc.mem().get_string(sp + 8).to_owned();
-    match &addr.parse() {
+    match &addr
+        .parse()
+        .map_err(|e: net::AddrParseError| -> Error { e.into() })
+    {
         Ok(addr) => {
             let id = fc.shared_state_mut().net_loop.tcp_connect(addr);
             fc.set_usize_result(sp + 24, id);
@@ -525,7 +545,7 @@ extern "C" fn go_net_get_error(vmctx: *mut VMContext, sp: i32) {
     match fc.shared_state_mut().net_loop.get_error(id as usize) {
         Ok(e) => {
             if let Some(e) = e {
-                fc.set_error(sp + 16, &e);
+                fc.set_error(sp + 16, &e.into());
                 fc.mem_mut().set_bool(sp + 16 + 4, true);
             } else {
                 fc.mem_mut().set_bool(sp + 16 + 4, false);
@@ -559,7 +579,7 @@ extern "C" fn go_close_listener_or_conn(vmctx: *mut VMContext, sp: i32) {
     let id = fc.mem().get_i32(sp + 8);
     // todo, pass error value
 
-    if let Err(err) = fc.shared_state_mut().net_loop.close(id as usize) {
+    if let Err(err) = fc.shared_state_mut().net_loop.close_conn(id as usize) {
         fc.set_error(sp + 16, &err);
         fc.mem_mut().set_bool(sp + 16 + 4, false);
     } else {
@@ -584,7 +604,7 @@ extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
             fc.set_byte_array_array(sp + 24, byte_ips);
         }
         Err(err) => {
-            fc.set_error(sp + 24, &err);
+            fc.set_error(sp + 24, &err.into());
             fc.mem_mut().set_bool(sp + 24 + 4, false);
         }
     }

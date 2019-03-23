@@ -1,3 +1,36 @@
+//! Wasabi io
+//!
+//! This module contains a struct IOLoop that handles all kinds of IO. Networking
+//! is implemented using mio and a single event thread. Filesystem io and dns is
+//! handled with tokio and trust-dns. A simple chroot is implemented for the
+//! filesystem. More resoure limiting and access rules will be added in the future.
+
+#![deny(
+    // missing_docs,
+    trivial_numeric_casts,
+    unstable_features,
+    unused_extern_crates,
+    unused_features
+)]
+#![warn(unused_import_braces, unused_parens)]
+#![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
+#![cfg_attr(
+    feature = "cargo-clippy",
+    allow(clippy::new_without_default, clippy::new_without_default_derive)
+)]
+#![cfg_attr(
+    feature = "cargo-clippy",
+    warn(
+        clippy::float_arithmetic,
+        clippy::mut_mut,
+        clippy::nonminimal_bool,
+        clippy::option_map_unwrap_or,
+        clippy::option_map_unwrap_or_else,
+        clippy::unicode_not_nfc,
+        clippy::use_self
+    )
+)]
+
 use failure::{err_msg, Error};
 use futures::future;
 use futures::Future;
@@ -5,7 +38,6 @@ use mio;
 use mio::net::{TcpListener, TcpStream};
 use path_dedot::ParseDot;
 use slab::Slab;
-use std;
 use std::env::current_dir;
 use std::fs;
 use std::io::{Read, SeekFrom, Write};
@@ -20,13 +52,21 @@ use trust_dns_resolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::AsyncResolver;
 
+/// O_WRONLY openmode bitmask
 pub const O_WRONLY: i64 = 1;
+/// O_RDWR openmode bitmask
 pub const O_RDWR: i64 = 2;
+/// O_CREAT openmode bitmask
 pub const O_CREAT: i64 = 64;
+/// O_TRUNC openmode bitmask
 pub const O_TRUNC: i64 = 512;
+/// O_APPEND openmode bitmask
 pub const O_APPEND: i64 = 1024;
+/// O_EXCL openmode bitmask
 pub const O_EXCL: i64 = 128;
 
+/// converts a mio event to a token id and event bitarray
+/// the first four bits correlate to: readable, writeable, is_hup, is_error
 pub fn event_to_ints(event: &mio::Event) -> ((i64, i64)) {
     // 0 << 0 | 1 << 1 | 0 << 2 | 1 << 3
 
@@ -50,6 +90,7 @@ fn u16_as_u8_le(x: u16) -> [u8; 2] {
     [(x & 0xff) as u8, ((x >> 8) & 0xff) as u8]
 }
 
+/// writes an ipv4 socket address as bytes to a u8 array
 pub fn addr_to_bytes(addr: SocketAddr, b: &mut [u8]) -> Result<(), Error> {
     match addr {
         SocketAddr::V4(a) => {
@@ -353,14 +394,18 @@ impl IOLoop {
     pub fn fs_open(&mut self, id: i64, path: String, openmode: i64, _perm: i32) {
         let es = self.event_sender.clone();
 
+        // TODO: set perms on returned file if we create
         self.runtime.spawn(
-            IOLoop::open_options(openmode)
+            Self::open_options(openmode)
                 .open(path)
                 .then(move |result| send_result(id, es, result)),
         );
     }
     fn recv_wrapper(&mut self, r: Result<Response, Error>) -> Result<Response, Error> {
         if let Ok(resp) = r {
+            // TODO: this is likely excessive if fs_open is the only thing
+            // opening or creating files. remove and put in fs_open if that's
+            // the case
             if let Response::File { id, file } = resp {
                 // keep the file and return a virtual fd and the id
                 Ok(Response::FileRef {

@@ -1,16 +1,16 @@
 use failure::Error;
 use js;
 use mem::Mem;
-use network;
-use network::NetLoop;
 use std::collections::{HashMap, VecDeque};
 use timeout_heap::ToHeap;
+use wasabi_io;
+use wasabi_io::IOLoop;
 use wasmtime_runtime::VMMemoryDefinition;
 
 #[derive(Debug)]
 pub struct SharedState {
     pub exited: bool,
-    pub net_loop: NetLoop,
+    pub net_loop: IOLoop,
     pub net_callback_id: i64,
     pub timeout_heap: ToHeap,
     pub call_queue: VecDeque<i64>,
@@ -24,7 +24,7 @@ impl SharedState {
             timeout_heap: ToHeap::new(),
             exited: false,
             mem: Mem::new(),
-            net_loop: NetLoop::new(),
+            net_loop: IOLoop::new(),
             net_callback_id: 0,
             js: js::Js::new().unwrap(),
             call_queue: VecDeque::new(),
@@ -33,7 +33,7 @@ impl SharedState {
     pub fn add_definition(&mut self, def: *mut VMMemoryDefinition) {
         self.mem.definition = Some(def);
     }
-    fn recv_net_events(&mut self) -> Option<Vec<mio::event::Event>> {
+    fn recv_net_events(&mut self) -> Option<Vec<wasabi_io::Response>> {
         let mut events = Vec::new();
 
         // We have to clear them before we do the empty check below
@@ -85,9 +85,16 @@ impl SharedState {
             if let Some(events) = self.recv_net_events() {
                 let mut network_cb_args = Vec::new();
                 for event in &events {
-                    let ints = network::event_to_ints(event);
-                    network_cb_args.push((ints.0, false));
-                    network_cb_args.push((ints.1, false));
+                    match event {
+                        wasabi_io::Response::Event(event) => {
+                            let ints = wasabi_io::event_to_ints(event);
+                            network_cb_args.push((ints.0, false));
+                            network_cb_args.push((ints.1, false));
+                        }
+                        _ => {
+                            // TODO
+                        }
+                    }
                 }
                 // Add the network callback to the call stack
                 let ncbid = self.net_callback_id;
