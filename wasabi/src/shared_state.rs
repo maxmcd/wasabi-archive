@@ -1,7 +1,9 @@
+use bytes::i32_as_u8_le;
 use failure::Error;
 use js;
-use mem::Mem;
+use mem::{Actions, Mem};
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use timeout_heap::ToHeap;
 use wasabi_io;
 use wasabi_io::IOLoop;
@@ -32,6 +34,58 @@ impl SharedState {
     }
     pub fn add_definition(&mut self, def: *mut VMMemoryDefinition) {
         self.mem.definition = Some(def);
+    }
+    pub fn store_string(&mut self, address: i32, val: String) {
+        let reference = self.store_value_bytes(val.into_bytes());
+        self.mem.set_i32(address, reference);
+    }
+    pub fn load_value(&self, address: i32) -> (i64, bool) {
+        let addru = address as usize;
+        js::load_value(&self.mem.mem_slice(addru, addru + 8))
+    }
+    fn _set_byte_array_array(&mut self, values: Vec<Vec<u8>>) -> i32 {
+        let mut byte_references = vec![0; values.len() * 4];
+        for (i, value) in values.iter().enumerate() {
+            let reference = self.store_value_bytes(value.to_vec());
+            byte_references[i * 4..i * 4 + 4].clone_from_slice(&i32_as_u8_le(reference));
+        }
+        self.store_value_bytes(byte_references)
+    }
+    pub fn set_byte_array_array(&mut self, addr: i32, values: Vec<Vec<u8>>) {
+        let reference = self._set_byte_array_array(values);
+        self.mem.set_i32(addr, reference);
+    }
+    pub fn set_usize_result(&mut self, addr: i32, result: Result<usize, Error>) {
+        match result {
+            Ok(value) => {
+                self.mem.set_i32(addr, value as i32);
+                self.mem.set_bool(addr + 4, true);
+            }
+            Err(err) => {
+                self.set_error(addr, &err);
+                self.mem.set_bool(addr + 4, false);
+            }
+        }
+    }
+    pub fn set_error(&mut self, addr: i32, err: &Error) {
+        self.store_string(addr, err.to_string())
+    }
+    pub fn store_value(&mut self, addr: i32, jsv: (i64, bool)) {
+        let b = js::store_value(jsv);
+        let addru = addr as usize;
+        self.mem.mut_mem_slice(addru, addru + 8).copy_from_slice(&b)
+    }
+    pub fn load_slice_of_values(&self, address: i32) -> Vec<(i64, bool)> {
+        let mut out = Vec::new();
+        let array = self.mem.get_i32(address);
+        let len = self.mem.get_i32(address + 8);
+        for n in 0..len {
+            out.push(self.load_value(array + n * 8))
+        }
+        out
+    }
+    pub fn store_value_bytes(&mut self, b: Vec<u8>) -> i32 {
+        self.js.slab_add(js::Value::Bytes(b)) as i32
     }
     fn recv_net_events(&mut self) -> Option<Vec<wasabi_io::Response>> {
         let mut events = Vec::new();
@@ -98,6 +152,34 @@ impl SharedState {
                             self.js.add_object_value(*id, "result", (2, true)).unwrap();
                             self.call_queue.push_back(*id);
                         }
+                        wasabi_io::Response::Ips { id, ips } => {
+                            let mut byte_ips: Vec<Vec<u8>> = Vec::new();
+                            for ip in ips.iter() {
+                                match ip {
+                                    IpAddr::V4(ip4) => byte_ips.push(ip4.octets().to_vec()),
+                                    IpAddr::V6(_) => {} //no IPV6 support
+                                }
+                            }
+                            let reference = self._set_byte_array_array(byte_ips);
+                            self.js
+                                .add_array(
+                                    *id,
+                                    "args",
+                                    vec![(2, true), (i64::from(reference), false)],
+                                )
+                                .unwrap();
+                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
+                            self.call_queue.push_back(*id);
+                        }
+                        wasabi_io::Response::Error { id, msg } => {
+                            let error = self.js.slab_add(js::Value::Bytes(msg.as_bytes().to_vec()));
+                            self.js
+                                .add_array(*id, "args", vec![(error, false)])
+                                .unwrap();
+                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
+                            self.call_queue.push_back(*id);
+                        }
+
                         _ => {
                             println!("unhandled event {:?}", event);
                         }

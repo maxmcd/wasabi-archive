@@ -311,6 +311,7 @@ impl IOLoop {
             .spawn(metadata(name).then(move |result| send_result(id, es, result)));
     }
     pub fn lookup_ip(&mut self, id: i64, addr: &str) {
+        self.call_count += 1;
         let es = self.event_sender.clone();
         self.runtime
             .spawn(self.resolver.lookup_ip(addr).then(move |result| {

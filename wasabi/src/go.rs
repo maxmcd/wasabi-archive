@@ -1,4 +1,4 @@
-use bytes::{i32_as_u8_le, u32_as_u8_le};
+use bytes::u32_as_u8_le;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
@@ -138,6 +138,23 @@ trait ContextHelpers {
                 );
                 Some((0, true))
             }
+            ("lookup_ip", "wasabi") => {
+                // host, callback
+                // [(59, true), (60, true)]
+                let value = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::String(s) => (s.to_owned()),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                self.shared_state_mut()
+                    .net_loop
+                    .lookup_ip(argument_list[1].0, &value);
+                // println!("{:?}", (argument_list, value));
+                Some(argument_list[1])
+            }
             ("open", "fs") => {
                 let value = {
                     match self.js().slab_get(argument_list[0].0).unwrap() {
@@ -230,57 +247,6 @@ trait ContextHelpers {
             }
         }
     }
-    fn set_byte_array_array(&mut self, addr: i32, values: Vec<Vec<u8>>) {
-        let mut byte_references = vec![0; values.len() * 4];
-        for (i, value) in values.iter().enumerate() {
-            let reference = self.store_value_bytes(value.to_vec());
-            byte_references[i * 4..i * 4 + 4].clone_from_slice(&i32_as_u8_le(reference));
-        }
-        let reference = self.store_value_bytes(byte_references);
-        self.mem_mut().set_i32(addr, reference);
-    }
-    fn set_usize_result(&mut self, addr: i32, result: Result<usize, Error>) {
-        match result {
-            Ok(value) => {
-                self.mem_mut().set_i32(addr, value as i32);
-                self.mem_mut().set_bool(addr + 4, true);
-            }
-            Err(err) => {
-                self.set_error(addr, &err);
-                self.mem_mut().set_bool(addr + 4, false);
-            }
-        }
-    }
-    fn set_error(&mut self, addr: i32, err: &Error) {
-        self.store_string(addr, err.to_string())
-    }
-    fn store_value_bytes(&mut self, b: Vec<u8>) -> i32 {
-        self.js_mut().slab_add(js::Value::Bytes(b)) as i32
-    }
-    fn store_value(&mut self, addr: i32, jsv: (i64, bool)) {
-        let b = js::store_value(jsv);
-        let addru = addr as usize;
-        self.mem_mut()
-            .mut_mem_slice(addru, addru + 8)
-            .copy_from_slice(&b)
-    }
-    fn store_string(&mut self, address: i32, val: String) {
-        let reference = self.store_value_bytes(val.into_bytes());
-        self.mem_mut().set_i32(address, reference);
-    }
-    fn load_slice_of_values(&self, address: i32) -> Vec<(i64, bool)> {
-        let mut out = Vec::new();
-        let array = self.mem().get_i32(address);
-        let len = self.mem().get_i32(address + 8);
-        for n in 0..len {
-            out.push(self.load_value(array + n * 8))
-        }
-        out
-    }
-    fn load_value(&self, address: i32) -> (i64, bool) {
-        let addru = address as usize;
-        js::load_value(&self.mem().mem_slice(addru, addru + 8))
-    }
 }
 
 extern "C" fn go_debug(_sp: i32) {
@@ -308,37 +274,41 @@ extern "C" fn go_js_string_val(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let string = js::Value::String(fc.mem().get_string(sp + 8).to_string());
     let reference = fc.js_mut().slab_add(string);
-    fc.store_value(sp + 24, (reference, true));
+    fc.shared_state_mut()
+        .store_value(sp + 24, (reference, true));
 }
 
 extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let result = fc
-        .reflect_get(fc.load_value(sp + 8).0, &fc.get_static_string(sp + 16))
+        .reflect_get(
+            fc.shared_state().load_value(sp + 8).0,
+            &fc.get_static_string(sp + 16),
+        )
         .unwrap();
-    fc.store_value(sp + 32, result);
+    fc.shared_state_mut().store_value(sp + 32, result);
 }
 
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let target = fc.load_value(sp + 8).0;
+    let target = fc.shared_state().load_value(sp + 8).0;
     let property_key = fc.get_static_string(sp + 16);
-    let value = fc.load_value(sp + 32).0;
+    let value = fc.shared_state().load_value(sp + 32).0;
     if let Err(err) = fc
         .shared_state_mut()
         .js
         .reflect_set(target, property_key, value)
     {
-        fc.set_error(sp, &err)
+        fc.shared_state_mut().set_error(sp, &err)
     };
 }
 
 extern "C" fn go_js_value_index(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let target = fc.load_value(sp + 8).0;
+    let target = fc.shared_state().load_value(sp + 8).0;
     let property_key = fc.mem().get_i64(sp + 16);
     let jsv = fc.reflect_get_index(target, property_key).unwrap();
-    fc.store_value(sp + 24, jsv);
+    fc.shared_state_mut().store_value(sp + 24, jsv);
 }
 
 extern "C" fn go_js_value_set_index(_sp: i32) {
@@ -351,27 +321,27 @@ extern "C" fn go_js_value_invoke(_sp: i32) {
 
 extern "C" fn go_js_value_call(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let v = fc.load_value(sp + 8);
+    let v = fc.shared_state().load_value(sp + 8);
     let m = fc.reflect_get(v.0, &fc.get_static_string(sp + 16)).unwrap();
-    let args = fc.load_slice_of_values(sp + 32);
+    let args = fc.shared_state().load_slice_of_values(sp + 32);
     let result = fc.reflect_apply(m.0, v.0, args).unwrap();
     // TODO: catch error and error
-    fc.store_value(sp + 56, result);
+    fc.shared_state_mut().store_value(sp + 56, result);
     fc.mem_mut().set_bool(sp + 64, true);
 }
 
 extern "C" fn go_js_value_new(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let v = fc.load_value(sp + 8).0;
-    let args = fc.load_slice_of_values(sp + 16);
+    let v = fc.shared_state().load_value(sp + 8).0;
+    let args = fc.shared_state().load_slice_of_values(sp + 16);
     let result = fc.reflect_construct(v, args).unwrap();
-    fc.store_value(sp + 40, result);
+    fc.shared_state_mut().store_value(sp + 40, result);
     fc.mem_mut().set_bool(sp + 48, true);
 }
 
 extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let v = fc.load_value(sp + 8);
+    let v = fc.shared_state().load_value(sp + 8);
     let num = fc.value_length(v.0).unwrap();
     fc.mem_mut().set_i64(sp + 16, num);
 }
@@ -459,10 +429,10 @@ extern "C" fn go_listen_tcp(vmctx: *mut VMContext, sp: i32) {
     {
         Ok(addr) => {
             let id = fc.shared_state_mut().net_loop.tcp_listen(addr);
-            fc.set_usize_result(sp + 24, id);
+            fc.shared_state_mut().set_usize_result(sp + 24, id);
         }
         Err(err) => {
-            fc.set_error(sp + 24, err);
+            fc.shared_state_mut().set_error(sp + 24, err);
         }
     }
 }
@@ -471,7 +441,7 @@ extern "C" fn go_accept_tcp(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let token = fc.mem().get_i32(sp + 8);
     let id = fc.shared_state_mut().net_loop.tcp_accept(token as usize);
-    fc.set_usize_result(sp + 16, id);
+    fc.shared_state_mut().set_usize_result(sp + 16, id);
 }
 
 extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
@@ -483,10 +453,10 @@ extern "C" fn go_dial_tcp(vmctx: *mut VMContext, sp: i32) {
     {
         Ok(addr) => {
             let id = fc.shared_state_mut().net_loop.tcp_connect(addr);
-            fc.set_usize_result(sp + 24, id);
+            fc.shared_state_mut().set_usize_result(sp + 24, id);
         }
         Err(err) => {
-            fc.set_error(sp + 24, err);
+            fc.shared_state_mut().set_error(sp + 24, err);
         }
     }
 }
@@ -505,7 +475,7 @@ extern "C" fn go_shutdown_tcp_conn(vmctx: *mut VMContext, sp: i32) {
         _ => panic!("Incorrect value for shutdown {:?}", how),
     };
     if let Err(err) = fc.shared_state_mut().net_loop.shutdown(id as usize, sd) {
-        fc.set_error(sp + 16, &err);
+        fc.shared_state_mut().set_error(sp + 16, &err);
         fc.mem_mut().set_bool(sp + 16 + 4, false)
     } else {
         fc.mem_mut().set_bool(sp + 16 + 4, true)
@@ -523,7 +493,7 @@ extern "C" fn go_write_tcp_conn(vmctx: *mut VMContext, sp: i32) {
             .mem
             .mem_slice(addr as usize, (addr + ln) as usize),
     );
-    fc.set_usize_result(sp + 40, written);
+    fc.shared_state_mut().set_usize_result(sp + 40, written);
 }
 
 extern "C" fn go_net_get_error(vmctx: *mut VMContext, sp: i32) {
@@ -532,14 +502,14 @@ extern "C" fn go_net_get_error(vmctx: *mut VMContext, sp: i32) {
     match fc.shared_state_mut().net_loop.get_error(id as usize) {
         Ok(e) => {
             if let Some(e) = e {
-                fc.set_error(sp + 16, &e.into());
+                fc.shared_state_mut().set_error(sp + 16, &e.into());
                 fc.mem_mut().set_bool(sp + 16 + 4, true);
             } else {
                 fc.mem_mut().set_bool(sp + 16 + 4, false);
             }
         }
         Err(err) => {
-            fc.set_error(sp + 16, &err);
+            fc.shared_state_mut().set_error(sp + 16, &err);
             fc.mem_mut().set_bool(sp + 16 + 4, true);
         }
     }
@@ -558,7 +528,7 @@ extern "C" fn go_read_tcp_conn(vmctx: *mut VMContext, sp: i32) {
             shared_state.mem.mut_mem_slice(start as usize, end as usize),
         )
     };
-    fc.set_usize_result(sp + 40, read);
+    fc.shared_state_mut().set_usize_result(sp + 40, read);
 }
 
 extern "C" fn go_close_listener_or_conn(vmctx: *mut VMContext, sp: i32) {
@@ -567,7 +537,7 @@ extern "C" fn go_close_listener_or_conn(vmctx: *mut VMContext, sp: i32) {
     // todo, pass error value
 
     if let Err(err) = fc.shared_state_mut().net_loop.close_conn(id as usize) {
-        fc.set_error(sp + 16, &err);
+        fc.shared_state_mut().set_error(sp + 16, &err);
         fc.mem_mut().set_bool(sp + 16 + 4, false);
     } else {
         fc.mem_mut().set_bool(sp + 16 + 4, true);
@@ -588,10 +558,11 @@ extern "C" fn go_lookup_ip_addr(vmctx: *mut VMContext, sp: i32) {
                     IpAddr::V6(_) => {} //no IPV6 support
                 }
             }
-            fc.set_byte_array_array(sp + 24, byte_ips);
+            fc.shared_state_mut()
+                .set_byte_array_array(sp + 24, byte_ips);
         }
         Err(err) => {
-            fc.set_error(sp + 24, &err.into());
+            fc.shared_state_mut().set_error(sp + 24, &err.into());
             fc.mem_mut().set_bool(sp + 24 + 4, false);
         }
     }

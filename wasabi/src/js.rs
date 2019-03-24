@@ -243,6 +243,9 @@ impl Js {
         js.add_object(global, "process")?;
         js.add_object(global, "net_listener")?;
 
+        let wsbi = js.add_object(global, "wasabi")?;
+        js.add_object(wsbi, "lookup_ip")?;
+
         let date = js.add_object(global, "Date")?;
         // this would be a function on a new Date() but we'll just make it a
         // function on the global object to avoid allocating an item
