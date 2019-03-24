@@ -120,6 +120,10 @@ pub enum Response {
         id: i64,
         fd: usize,
     },
+    Written {
+        id: i64,
+        len: usize,
+    },
     Read {
         id: i64,
         len: usize,
@@ -141,6 +145,7 @@ impl Response {
             Response::File { id, .. } => Some(*id),
             Response::Success { id, .. } => Some(*id),
             Response::Read { id, .. } => Some(*id),
+            Response::Written { id, .. } => Some(*id),
             Response::Error { id, .. } => Some(*id),
             Response::Ips { id, .. } => Some(*id),
             Response::Metadata { id, .. } => Some(*id),
@@ -178,19 +183,28 @@ impl ToResponse for () {
 
 impl ToResponse for (tokio::io::Stdout, Vec<u8>) {
     fn to_response(self, id: i64) -> Response {
-        Response::Success { id }
+        Response::Written {
+            id,
+            len: self.1.len(),
+        }
     }
 }
 
 impl ToResponse for (tokio::io::Stderr, Vec<u8>) {
     fn to_response(self, id: i64) -> Response {
-        Response::Success { id }
+        Response::Written {
+            id,
+            len: self.1.len(),
+        }
     }
 }
 
 impl ToResponse for (tokio::fs::File, Vec<u8>) {
     fn to_response(self, id: i64) -> Response {
-        Response::Success { id }
+        Response::Written {
+            id,
+            len: self.1.len(),
+        }
     }
 }
 
@@ -227,8 +241,8 @@ enum Tcp {
 pub struct IOLoop {
     event_receiver: mpsc::Receiver<Response>,
     event_sender: mpsc::Sender<Response>,
-    pub is_listening: bool,
     path: PathBuf,
+    call_count: usize,
     runtime_cwd: PathBuf,
     poll: Arc<mio::Poll>,
     resolver: AsyncResolver,
@@ -277,7 +291,7 @@ impl IOLoop {
         Self {
             event_receiver,
             event_sender,
-            is_listening: false,
+            call_count: 0,
             path: PathBuf::from("/"),
             poll,
             resolver,
@@ -286,6 +300,10 @@ impl IOLoop {
             slab: Slab::new(),
             files: Slab::new(),
         }
+    }
+    pub fn is_active(&self) -> bool {
+        self.call_count > 0 || !self.slab.is_empty()
+        // TODO: add networking activity
     }
     pub fn metadata(&mut self, id: i64, name: String) {
         let es = self.event_sender.clone();
@@ -345,6 +363,7 @@ impl IOLoop {
     }
     pub fn stdout(&mut self, id: i64, buf: Vec<u8>) {
         let es = self.event_sender.clone();
+        self.call_count += 1;
         self.runtime.spawn(
             tokio::io::write_all(tokio::io::stdout(), buf)
                 .then(move |result| send_result(id, es, result)),
@@ -403,6 +422,9 @@ impl IOLoop {
     }
     fn recv_wrapper(&mut self, r: Result<Response, Error>) -> Result<Response, Error> {
         if let Ok(resp) = r {
+            if resp.id().is_some() {
+                self.call_count -= 1;
+            }
             // TODO: this is likely excessive if fs_open is the only thing
             // opening or creating files. remove and put in fs_open if that's
             // the case
@@ -442,12 +464,12 @@ impl IOLoop {
             // https://carllerche.github.io/mio/mio/struct.Poll.html#edge-triggered-and-level-triggered
             mio::PollOpt::edge(),
         )?;
-        self.is_listening = true;
+
         Ok(id)
     }
     pub fn tcp_connect(&mut self, addr: &SocketAddr) -> Result<usize, Error> {
         let stream = TcpStream::connect(addr)?;
-        self.is_listening = true;
+
         self.register_stream(stream)
     }
     fn register_stream(&mut self, stream: TcpStream) -> Result<usize, Error> {
@@ -583,12 +605,12 @@ mod tests {
         println!("I should be first");
         // should confirm printing happened
 
-        if let Response::Success { id } = nl.recv().unwrap() {
+        if let Response::Written { id, .. } = nl.recv().unwrap() {
             assert_eq!(0, id);
         } else {
             panic!("Wrong type returned");
         };
-        if let Response::Success { id } = nl.recv().unwrap() {
+        if let Response::Written { id, .. } = nl.recv().unwrap() {
             assert_eq!(0, id);
         } else {
             panic!("Wrong type returned");

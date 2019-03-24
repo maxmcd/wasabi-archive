@@ -81,7 +81,7 @@ impl SharedState {
             return Ok(true);
         }
         // Check for events if we have an active listener
-        if self.net_loop.is_listening {
+        if self.net_loop.is_active() {
             if let Some(events) = self.recv_net_events() {
                 let mut network_cb_args = Vec::new();
                 for event in &events {
@@ -91,14 +91,23 @@ impl SharedState {
                             network_cb_args.push((ints.0, false));
                             network_cb_args.push((ints.1, false));
                         }
+                        wasabi_io::Response::Written { id, len } => {
+                            self.js
+                                .add_array(*id, "args", vec![(2, true), (*len as i64, false)])
+                                .unwrap();
+                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
+                            self.call_queue.push_back(*id);
+                        }
                         _ => {
-                            // TODO
+                            println!("unhandled event {:?}", event);
                         }
                     }
                 }
-                // Add the network callback to the call stack
-                let ncbid = self.net_callback_id;
-                self.add_pending_event(ncbid, network_cb_args);
+                if !network_cb_args.is_empty() {
+                    // Add the network callback to the call stack
+                    let ncbid = self.net_callback_id;
+                    self.add_pending_event(ncbid, network_cb_args);
+                }
             }
         }
 
@@ -172,42 +181,41 @@ mod tests {
 
     #[test]
     fn test_event_loop_only_callback() {
+        // TODO: there are two timeout points, we were flipping is_listening but that's
+        // now gone. re-add a way to test both timeout
+
         let mut ss = SharedState::new();
-        for is_listening in vec![true, false] {
-            ss.net_loop.is_listening = is_listening;
+        let ms = 2;
+        ss.timeout_heap.add(ms);
 
-            let ms = 2;
-            ss.timeout_heap.add(ms);
+        let should_break = ss.process_event_loop().unwrap();
+        assert_eq!(should_break, false);
+        assert!(ss.timeout_heap.is_empty());
 
-            let should_break = ss.process_event_loop().unwrap();
-            assert_eq!(should_break, false);
-            assert!(ss.timeout_heap.is_empty());
+        let ms_2 = 15;
+        ss.timeout_heap.add(ms_2);
 
-            let ms_2 = 15;
-            ss.timeout_heap.add(ms_2);
+        let to_cancel_id = ss.timeout_heap.add(12);
 
-            let to_cancel_id = ss.timeout_heap.add(12);
+        let ms = 5;
+        ss.timeout_heap.add(ms);
 
-            let ms = 5;
-            ss.timeout_heap.add(ms);
+        let timeout_timer = SystemTime::now();
+        let should_break = ss.process_event_loop().unwrap();
+        println!("{:?}", timeout_timer.elapsed().unwrap());
+        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
+        assert_eq!(should_break, false);
 
-            let timeout_timer = SystemTime::now();
-            let should_break = ss.process_event_loop().unwrap();
-            println!("{:?}", timeout_timer.elapsed().unwrap());
-            assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms as u64));
-            assert_eq!(should_break, false);
+        ss.add_pending_event(4, vec![]);
+        ss.process_event_loop().unwrap();
+        assert!(ss.call_queue.is_empty());
 
-            ss.add_pending_event(4, vec![]);
-            ss.process_event_loop().unwrap();
-            assert!(ss.call_queue.is_empty());
+        ss.timeout_heap.remove(to_cancel_id);
 
-            ss.timeout_heap.remove(to_cancel_id);
-
-            let should_break = ss.process_event_loop().unwrap();
-            println!("{:?}", timeout_timer.elapsed().unwrap());
-            assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms_2 as u64));
-            assert_eq!(should_break, false);
-        }
+        let should_break = ss.process_event_loop().unwrap();
+        println!("{:?}", timeout_timer.elapsed().unwrap());
+        assert!(timeout_timer.elapsed().unwrap() > time::Duration::from_millis(ms_2 as u64));
+        assert_eq!(should_break, false);
     }
 
 }

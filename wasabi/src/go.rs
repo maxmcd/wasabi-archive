@@ -164,14 +164,14 @@ trait ContextHelpers {
                         }
                     }
                 };
-                let (address, len) = {
-                    match self.js().slab_get(argument_list[1].0).unwrap() {
-                        js::Value::Memory { address, len } => (*address as usize, *len as usize),
-                        _ => {
-                            return None;
-                        }
-                    }
-                };
+                // let (address, len) = {
+                //     match self.js().slab_get(argument_list[1].0).unwrap() {
+                //         js::Value::Memory { address, len } => (*address as usize, *len as usize),
+                //         _ => {
+                //             return None;
+                //         }
+                //     }
+                // };
                 println!("{:?} {:?}", argument_list, value);
                 Some((0, true))
             }
@@ -192,23 +192,10 @@ trait ContextHelpers {
                         }
                     }
                 };
-                print!(
-                    "{}",
-                    str::from_utf8(self.mem()._get_bytes(address, len)).unwrap()
-                );
-                self.js_mut()
-                    .add_array(
-                        argument_list[5].0,
-                        "args",
-                        vec![(2, true), argument_list[3]],
-                    )
-                    .unwrap();
-                self.js_mut()
-                    .add_object_value(argument_list[5].0, "result", (2, true))
-                    .unwrap();
+                let to_print = self.mem()._get_bytes(address, len).to_vec();
                 self.shared_state_mut()
-                    .call_queue
-                    .push_back(argument_list[5].0);
+                    .net_loop
+                    .stdout(argument_list[5].0, to_print);
                 Some(argument_list[3])
             }
             _ => {
