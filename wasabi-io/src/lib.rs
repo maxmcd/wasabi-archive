@@ -103,10 +103,18 @@ pub fn addr_to_bytes(addr: SocketAddr, b: &mut [u8]) -> Result<(), Error> {
 }
 
 #[derive(Debug)]
+pub enum ErrorKind {
+    NotFound,
+    DNSUglySpecialCase,
+    Unknown,
+}
+
+#[derive(Debug)]
 pub enum Response {
     Error {
         id: i64,
         msg: String,
+        kind: ErrorKind,
     },
     Ips {
         id: i64,
@@ -128,6 +136,7 @@ pub enum Response {
         id: i64,
         len: usize,
         buf: Vec<u8>,
+        address: usize,
     },
     Success {
         id: i64,
@@ -162,16 +171,6 @@ trait ToResponse {
 impl ToResponse for tokio::fs::File {
     fn to_response(self, id: i64) -> Response {
         Response::File { file: self, id }
-    }
-}
-
-impl ToResponse for (tokio::fs::File, Vec<u8>, usize) {
-    fn to_response(self, id: i64) -> Response {
-        Response::Read {
-            buf: self.1,
-            id,
-            len: self.2,
-        }
     }
 }
 
@@ -214,18 +213,30 @@ impl ToResponse for fs::Metadata {
     }
 }
 
+impl ToResponse for (tokio::fs::File, fs::Metadata) {
+    fn to_response(self, id: i64) -> Response {
+        Response::Metadata { md: self.1, id }
+    }
+}
+
 fn send_result(
     id: i64,
     es: mpsc::Sender<Response>,
     result: Result<impl ToResponse, std::io::Error>,
 ) -> impl Future<Item = (), Error = ()> {
     match result {
-        Err(err) => es
-            .send(Response::Error {
+        Err(err) => {
+            let error_kind = match err.kind() {
+                std::io::ErrorKind::NotFound => ErrorKind::NotFound,
+                _ => ErrorKind::Unknown,
+            };
+            es.send(Response::Error {
                 msg: err.to_string(),
                 id,
+                kind: error_kind,
             })
-            .unwrap(),
+            .unwrap()
+        }
         Ok(tr) => es.send(tr.to_response(id)).unwrap(),
     };
     future::ok(())
@@ -319,6 +330,7 @@ impl IOLoop {
                     Err(err) => es
                         .send(Response::Error {
                             msg: err.to_string(),
+                            kind: ErrorKind::DNSUglySpecialCase,
                             id,
                         })
                         .unwrap(),
@@ -347,6 +359,7 @@ impl IOLoop {
     }
     pub fn fs_mkdir(&mut self, id: i64, path: String) {
         let es = self.event_sender.clone();
+        self.call_count += 1;
         self.runtime.spawn(
             tokio::fs::create_dir(self.real_path(&path))
                 .then(move |result| send_result(id, es, result)),
@@ -357,6 +370,7 @@ impl IOLoop {
     }
     pub fn stderr(&mut self, id: i64, buf: Vec<u8>) {
         let es = self.event_sender.clone();
+        self.call_count += 1;
         self.runtime.spawn(
             tokio::io::write_all(tokio::io::stderr(), buf)
                 .then(move |result| send_result(id, es, result)),
@@ -370,28 +384,71 @@ impl IOLoop {
                 .then(move |result| send_result(id, es, result)),
         );
     }
-    pub fn fs_write(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
-        // TODO: should be able to pass around a lifetime for vec that
-        // allows us to send it without allocating a new object
+    pub fn fs_metadata(&mut self, id: i64, fd: usize) {
         let f = self.files.get(fd).unwrap().try_clone().unwrap();
         let tf = tokio::fs::File::from_std(f);
         let es = self.event_sender.clone();
+        self.call_count += 1;
         self.runtime.spawn(
-            tf.seek(SeekFrom::Start(0)) // TODO: pass this value to the function. also race conditions?
+            tf.metadata() // TODO: pass this value to the function. also race conditions?
+                .then(move |result| send_result(id, es, result)),
+        );
+    }
+
+    pub fn fs_write(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
+        let f = self.files.get(fd).unwrap().try_clone().unwrap();
+        let tf = tokio::fs::File::from_std(f);
+        let es = self.event_sender.clone();
+        self.call_count += 1;
+        self.runtime.spawn(
+            tf.seek(SeekFrom::Start(0))
                 .and_then(|(tf, _)| tokio::io::write_all(tf, buf))
                 .then(move |result| send_result(id, es, result)),
         );
     }
-    pub fn fs_read(&mut self, id: i64, fd: usize, buf: Vec<u8>) {
-        // TODO: should be able to pass around a lifetime for vec that
-        // allows us to send it without allocating a new object
+    pub fn fs_read(
+        &mut self,
+        id: i64,
+        fd: usize,
+        address: usize,
+        len: usize,
+        seek_from: std::io::SeekFrom,
+    ) {
+        if id > 100 {
+            panic!("done");
+        }
         let f = self.files.get(fd).unwrap().try_clone().unwrap();
         let tf = tokio::fs::File::from_std(f);
         let es = self.event_sender.clone();
+        self.call_count += 1;
         self.runtime.spawn(
-            tf.seek(SeekFrom::Start(0)) // TODO: pass this value to the function. also race conditions?
-                .and_then(|(tf, _)| tokio::io::read(tf, buf))
-                .then(move |result| send_result(id, es, result)),
+            tf.seek(seek_from)
+                .and_then(move |(tf, _)| tokio::io::read(tf, vec![0; len]))
+                .then(move |result| {
+                    match result {
+                        Err(err) => {
+                            let error_kind = match err.kind() {
+                                std::io::ErrorKind::NotFound => ErrorKind::NotFound,
+                                _ => ErrorKind::Unknown,
+                            };
+                            es.send(Response::Error {
+                                msg: err.to_string(),
+                                id,
+                                kind: error_kind,
+                            })
+                            .unwrap()
+                        }
+                        Ok((_file, buf, len)) => es
+                            .send(Response::Read {
+                                address,
+                                buf,
+                                id,
+                                len,
+                            })
+                            .unwrap(),
+                    };
+                    future::ok(())
+                }),
         );
     }
     fn open_options(openmode: i64) -> OpenOptions {
@@ -411,8 +468,9 @@ impl IOLoop {
             .truncate(openmode & O_TRUNC > 0)
             .clone()
     }
-    pub fn fs_open(&mut self, id: i64, path: String, openmode: i64, _perm: i32) {
+    pub fn fs_open(&mut self, id: i64, path: String, openmode: i64, _perm: i64) {
         let es = self.event_sender.clone();
+        self.call_count += 1;
 
         // TODO: set perms on returned file if we create
         self.runtime.spawn(
@@ -572,11 +630,9 @@ mod tests {
         nl.fs_write(0, fd, "Hello".as_bytes().to_vec());
         nl.recv().unwrap();
 
-        let buf = vec![0; 100];
         let cb_id = 20;
-        nl.fs_read(cb_id, fd, buf);
-
-        if let Response::Read { buf, id, len } = nl.recv().unwrap() {
+        nl.fs_read(cb_id, fd, 0, 100, std::io::SeekFrom::Start(0));
+        if let Response::Read { buf, id, len, .. } = nl.recv().unwrap() {
             assert_eq!(len, "Hello".len());
             assert_eq!(&buf[..len], "Hello".as_bytes());
             assert_eq!(cb_id, id);

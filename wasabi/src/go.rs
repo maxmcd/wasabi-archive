@@ -152,8 +152,44 @@ trait ContextHelpers {
                 self.shared_state_mut()
                     .net_loop
                     .lookup_ip(argument_list[1].0, &value);
-                // println!("{:?}", (argument_list, value));
                 Some(argument_list[1])
+            }
+            ("isDirectory", "fstat") => self.js().reflect_get(this_argument, "is_dir"),
+            ("fstat", "fs") => {
+                // fd          callback
+                // [(1, true), (42, true)]
+                self.shared_state_mut().net_loop.fs_metadata(
+                    argument_list[1].0,
+                    js::int_from_value(argument_list[0]) as usize,
+                );
+                Some((2, true))
+            }
+            ("read", "fs") => {
+                // [
+                //     (1,   true), fd
+                //     (48,  true), buffer
+                //     (1,   true), offset
+                //     (512, false), length
+                //     (2,   true), position
+                //     (49,  true), callback
+                // ];
+
+                let (address, _) = {
+                    match self.js().slab_get(argument_list[1].0).unwrap() {
+                        js::Value::Memory { address, len } => (*address as usize, *len as usize),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                self.shared_state_mut().net_loop.fs_read(
+                    argument_list[5].0,
+                    js::int_from_value(argument_list[0]) as usize,
+                    address,
+                    js::int_from_value(argument_list[3]) as usize,
+                    std::io::SeekFrom::Current(0),
+                );
+                Some((2, true))
             }
             ("open", "fs") => {
                 let value = {
@@ -164,10 +200,14 @@ trait ContextHelpers {
                         }
                     }
                 };
-
-                println!("fs open {:?} {:?}", argument_list, value);
+                self.shared_state_mut().net_loop.fs_open(
+                    argument_list[3].0,
+                    value,
+                    js::int_from_value(argument_list[1]),
+                    js::int_from_value(argument_list[2]),
+                );
                 // [(55, true), (1, true), (1, true), (53, true)
-                Some((0, true))
+                Some((2, true))
             }
             ("stat", "fs") => {
                 // [
@@ -346,12 +386,34 @@ extern "C" fn go_js_value_length(vmctx: *mut VMContext, sp: i32) {
     fc.mem_mut().set_i64(sp + 16, num);
 }
 
-extern "C" fn go_js_value_prepare_string(_sp: i32) {
-    println!("js_value_prepare_string")
+extern "C" fn go_js_value_prepare_string(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let reference = fc.mem().get_i32(sp + 8);
+
+    let len = match fc.shared_state().js.slab_get(i64::from(reference)).unwrap() {
+        js::Value::String(ref b) => b.len(),
+        _ => panic!("load_string needs string"),
+    };
+    // this is a little different from our prepare_bytes because we
+    // don't pass back the reference
+    fc.mem_mut().set_i64(sp + 16, i64::from(reference));
+    fc.mem_mut().set_i64(sp + 16 + 8, len as i64);
 }
 
-extern "C" fn go_js_value_load_string(_sp: i32) {
-    println!("js_value_load_string")
+extern "C" fn go_js_value_load_string(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let reference = fc.mem().get_i32(sp + 8);
+    let addr = fc.mem().get_i32(sp + 16);
+    let ln = fc.mem().get_i32(sp + 24);
+    let ss = fc.shared_state_mut();
+    let thing = ss.js.slab_get(i64::from(reference)).unwrap();
+    let b = match thing {
+        js::Value::String(ref b) => b,
+        _ => panic!("load_string needs string"),
+    };
+    ss.mem
+        .mut_mem_slice(addr as usize, (addr + ln) as usize)
+        .clone_from_slice(&b.as_bytes());
 }
 
 extern "C" fn go_wasmexit(vmctx: *mut VMContext, sp: i32) {

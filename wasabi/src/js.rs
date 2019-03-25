@@ -31,6 +31,11 @@ pub enum Value {
 pub struct Js {
     slab: Slab<Value>,
     pub static_strings: HashMap<&'static str, &'static str>,
+    pub error_not_found: i64,
+    pub true_value: i64,
+    pub false_value: i64,
+    pub null: i64,
+    pub global: i64,
 }
 
 pub fn load_value(b: &[u8]) -> (i64, bool) {
@@ -62,7 +67,114 @@ pub fn store_value(r: (i64, bool)) -> [u8; 8] {
     }
 }
 
+pub fn int_from_value(val: (i64, bool)) -> i64 {
+    if val == (1, true) {
+        0
+    } else {
+        val.0
+    }
+}
+
 impl Js {
+    pub fn new() -> Result<Self, Error> {
+        let mut js = Self {
+            slab: Slab::new(),
+            static_strings: HashMap::new(),
+            error_not_found: 2,
+            true_value: 2,
+            false_value: 2,
+            null: 2,
+            global: 2,
+        };
+        // These initial indexes must map up with Go's underlying assumptions
+        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/js/js.go#L75-L83
+        // https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js#L370-L377
+        js.slab_add(Value::NaN); //0 NaN
+        js.slab_add(Value::Int(0)); //1 0
+        js.slab_add(Value::Null); //2 null
+        js.true_value = js.slab_add(Value::True); //3 true
+        js.false_value = js.slab_add(Value::False); //4 false
+        let global = js.slab_add(Value::Object {
+            name: "global",
+            values: HashMap::new(),
+        }); //5 global
+        let mem = js.slab_add(Value::Object {
+            name: "mem",
+            values: HashMap::new(),
+        }); //6 this._inst.exports.mem
+        let this = js.slab_add(Value::Object {
+            name: "this",
+            values: HashMap::new(),
+        }); //7 this
+
+        js.add_object(mem, "buffer")?;
+
+        let fs = js.add_object(global, "fs")?;
+        println!("{:?}", fs);
+        js.add_object(fs, "write")?;
+        js.add_object(fs, "open")?;
+        js.add_object(fs, "stat")?;
+        js.add_object(fs, "fstat")?;
+        js.add_object(fs, "read")?;
+        js.add_object(fs, "fsync")?;
+
+        js.add_object(fs, "isDirectory")?;
+
+        let constants = js.add_object(fs, "constants")?;
+
+        // TODO: pass values from wasabi-io
+        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/syscall_js.go#L103-L112
+        js.add_object_value(constants, "O_WRONLY", (1, false))?;
+        js.add_object_value(constants, "O_RDWR", (2, false))?;
+        js.add_object_value(constants, "O_CREAT", (64, false))?;
+        js.add_object_value(constants, "O_TRUNC", (512, false))?;
+        js.add_object_value(constants, "O_APPEND", (1024, false))?;
+        js.add_object_value(constants, "O_EXCL", (128, false))?;
+
+        let crypto = js.add_object(global, "crypto")?;
+        js.add_object(crypto, "getRandomValues")?;
+
+        // let pe = js.add_object(this, "_pendingEvent")?;
+        js.add_object_value(this, "_pendingEvent", (2, true))?;
+        // js.add_object_value(pe, "result", (2, true))?;
+        js.add_object(this, "_makeFuncWrapper")?;
+
+        js.add_object(global, "Object")?;
+        js.add_object(global, "Array")?;
+
+        js.add_object(global, "Uint8Array")?;
+        js.add_object(global, "Int16Array")?;
+        js.add_object(global, "Int32Array")?;
+        js.add_object(global, "Int8Array")?;
+        js.add_object(global, "Uint16Array")?;
+        js.add_object(global, "Uint32Array")?;
+        js.add_object(global, "Float32Array")?;
+        js.add_object(global, "Float64Array")?;
+        js.add_object(global, "process")?;
+        js.add_object(global, "net_listener")?;
+
+        let wsbi = js.add_object(global, "wasabi")?;
+        js.add_object(wsbi, "lookup_ip")?;
+
+        let date = js.add_object(global, "Date")?;
+        // this would be a function on a new Date() but we'll just make it a
+        // function on the global object to avoid allocating an item
+        js.add_object(date, "getTimezoneOffset")?;
+
+        let enoent = js.slab_add(Value::Object {
+            name: "ENOENT",
+            values: HashMap::new(),
+        });
+        let code = js.slab_add(Value::String(String::from("ENOENT")));
+        js.add_object_value(enoent, "code", (code, true))?;
+        js.error_not_found = enoent;
+
+        js.global = global;
+
+        js.static_strings.insert("is_directory", "is_directory");
+
+        Ok(js)
+    }
     pub fn slab_add(&mut self, v: Value) -> i64 {
         self.slab.insert(v) as i64
     }
@@ -176,82 +288,20 @@ impl Js {
         };
         Err(err_msg("reflect_set target or property_key doesn't exist"))
     }
-    pub fn new() -> Result<Self, Error> {
-        let mut js = Self {
-            slab: Slab::new(),
-            static_strings: HashMap::new(),
+    pub fn add_metadata(&mut self, md: std::fs::Metadata) -> i64 {
+        let is_dir = if md.is_dir() {
+            self.true_value
+        } else {
+            self.false_value
         };
-        // These initial indexes must map up with Go's underlying assumptions
-        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/js/js.go#L75-L83
-        // https://github.com/golang/go/blob/release-branch.go1.12/misc/wasm/wasm_exec.js#L370-L377
-        js.slab_add(Value::NaN); //0 NaN
-        js.slab_add(Value::Int(0)); //1 0
-        js.slab_add(Value::Null); //2 null
-        js.slab_add(Value::True); //3 true
-        js.slab_add(Value::False); //4 false
-        let global = js.slab_add(Value::Object {
-            name: "global",
+        let fstat = self.slab_add(Value::Object {
+            name: "fstat",
             values: HashMap::new(),
-        }); //5 global
-        let mem = js.slab_add(Value::Object {
-            name: "mem",
-            values: HashMap::new(),
-        }); //6 this._inst.exports.mem
-        let this = js.slab_add(Value::Object {
-            name: "this",
-            values: HashMap::new(),
-        }); //7 this
-
-        js.add_object(mem, "buffer")?;
-
-        let fs = js.add_object(global, "fs")?;
-        js.add_object(fs, "write")?;
-        js.add_object(fs, "open")?;
-        js.add_object(fs, "stat")?;
-        js.add_object(fs, "read")?;
-        js.add_object(fs, "fsync")?;
-        let constants = js.add_object(fs, "constants")?;
-
-        // TODO: pass values from wasabi-io
-        // https://github.com/golang/go/blob/release-branch.go1.12/src/syscall/syscall_js.go#L103-L112
-        js.add_object_value(constants, "O_WRONLY", (1, false))?;
-        js.add_object_value(constants, "O_RDWR", (2, false))?;
-        js.add_object_value(constants, "O_CREAT", (64, false))?;
-        js.add_object_value(constants, "O_TRUNC", (512, false))?;
-        js.add_object_value(constants, "O_APPEND", (1024, false))?;
-        js.add_object_value(constants, "O_EXCL", (128, false))?;
-
-        let crypto = js.add_object(global, "crypto")?;
-        js.add_object(crypto, "getRandomValues")?;
-
-        // let pe = js.add_object(this, "_pendingEvent")?;
-        js.add_object_value(this, "_pendingEvent", (2, true))?;
-        // js.add_object_value(pe, "result", (2, true))?;
-        js.add_object(this, "_makeFuncWrapper")?;
-
-        js.add_object(global, "Object")?;
-        js.add_object(global, "Array")?;
-
-        js.add_object(global, "Uint8Array")?;
-        js.add_object(global, "Int16Array")?;
-        js.add_object(global, "Int32Array")?;
-        js.add_object(global, "Int8Array")?;
-        js.add_object(global, "Uint16Array")?;
-        js.add_object(global, "Uint32Array")?;
-        js.add_object(global, "Float32Array")?;
-        js.add_object(global, "Float64Array")?;
-        js.add_object(global, "process")?;
-        js.add_object(global, "net_listener")?;
-
-        let wsbi = js.add_object(global, "wasabi")?;
-        js.add_object(wsbi, "lookup_ip")?;
-
-        let date = js.add_object(global, "Date")?;
-        // this would be a function on a new Date() but we'll just make it a
-        // function on the global object to avoid allocating an item
-        js.add_object(date, "getTimezoneOffset")?;
-
-        Ok(js)
+        });
+        self.add_object(fstat, "isDirectory").unwrap();
+        self.add_object_value(fstat, "is_dir", (is_dir, true))
+            .unwrap();
+        fstat
     }
 }
 

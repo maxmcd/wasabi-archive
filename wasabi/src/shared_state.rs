@@ -138,19 +138,23 @@ impl SharedState {
         if self.net_loop.is_active() {
             if let Some(events) = self.recv_net_events() {
                 let mut network_cb_args = Vec::new();
-                for event in &events {
+                for event in events {
+                    if event.id().is_some() {
+                        self.js
+                            .add_object_value(event.id().unwrap(), "result", (2, true))
+                            .unwrap();
+                        self.call_queue.push_back(event.id().unwrap());
+                    }
                     match event {
                         wasabi_io::Response::Event(event) => {
-                            let ints = wasabi_io::event_to_ints(event);
+                            let ints = wasabi_io::event_to_ints(&event);
                             network_cb_args.push((ints.0, false));
                             network_cb_args.push((ints.1, false));
                         }
                         wasabi_io::Response::Written { id, len } => {
                             self.js
-                                .add_array(*id, "args", vec![(2, true), (*len as i64, false)])
+                                .add_array(id, "args", vec![(2, true), (len as i64, false)])
                                 .unwrap();
-                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
-                            self.call_queue.push_back(*id);
                         }
                         wasabi_io::Response::Ips { id, ips } => {
                             let mut byte_ips: Vec<Vec<u8>> = Vec::new();
@@ -163,23 +167,54 @@ impl SharedState {
                             let reference = self._set_byte_array_array(byte_ips);
                             self.js
                                 .add_array(
-                                    *id,
+                                    id,
                                     "args",
                                     vec![(2, true), (i64::from(reference), false)],
                                 )
                                 .unwrap();
-                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
-                            self.call_queue.push_back(*id);
                         }
-                        wasabi_io::Response::Error { id, msg } => {
-                            let error = self.js.slab_add(js::Value::Bytes(msg.as_bytes().to_vec()));
+                        wasabi_io::Response::Read {
+                            buf,
+                            id,
+                            len,
+                            address,
+                        } => {
+                            self.mem
+                                .mut_mem_slice(address, address + len)
+                                .clone_from_slice(&buf[..len]);
                             self.js
-                                .add_array(*id, "args", vec![(error, false)])
+                                .add_array(
+                                    id,
+                                    "args",
+                                    vec![(2, true), (len as i64, false), (2, true)],
+                                )
                                 .unwrap();
-                            self.js.add_object_value(*id, "result", (2, true)).unwrap();
-                            self.call_queue.push_back(*id);
                         }
-
+                        wasabi_io::Response::Metadata { id, md } => {
+                            let fstat = self.js.add_metadata(md);
+                            self.js
+                                .add_array(id, "args", vec![(2, true), (fstat, true)])
+                                .unwrap();
+                        }
+                        wasabi_io::Response::FileRef { id, fd } => {
+                            self.js
+                                .add_array(id, "args", vec![(2, true), ((fd as i64), false)])
+                                .unwrap();
+                        }
+                        wasabi_io::Response::Error { id, msg, kind } => match kind {
+                            wasabi_io::ErrorKind::DNSUglySpecialCase => {
+                                let error =
+                                    self.js.slab_add(js::Value::Bytes(msg.as_bytes().to_vec()));
+                                self.js.add_array(id, "args", vec![(error, false)]).unwrap();
+                            }
+                            wasabi_io::ErrorKind::NotFound => {
+                                let enf = self.js.error_not_found;
+                                self.js.add_array(id, "args", vec![(enf, true)]).unwrap();
+                            }
+                            _ => {
+                                println!("{:?}", kind);
+                            }
+                        },
                         _ => {
                             println!("unhandled event {:?}", event);
                         }
