@@ -151,6 +151,9 @@ impl SharedState {
                             network_cb_args.push((ints.0, false));
                             network_cb_args.push((ints.1, false));
                         }
+                        wasabi_io::Response::Success { id } => {
+                            self.js.add_array(id, "args", vec![(2, true)]).unwrap();
+                        }
                         wasabi_io::Response::Written { id, len } => {
                             self.js
                                 .add_array(id, "args", vec![(2, true), (len as i64, false)])
@@ -191,7 +194,7 @@ impl SharedState {
                                 .unwrap();
                         }
                         wasabi_io::Response::Metadata { id, md } => {
-                            let fstat = self.js.add_metadata(md);
+                            let fstat = self.js.add_metadata(md).unwrap();
                             self.js
                                 .add_array(id, "args", vec![(2, true), (fstat, true)])
                                 .unwrap();
@@ -212,7 +215,7 @@ impl SharedState {
                                 self.js.add_array(id, "args", vec![(enf, true)]).unwrap();
                             }
                             _ => {
-                                println!("{:?}", kind);
+                                println!("unhandled error type {:?}", kind);
                             }
                         },
                         _ => {

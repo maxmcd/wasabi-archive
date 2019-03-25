@@ -191,6 +191,41 @@ trait ContextHelpers {
                 );
                 Some((2, true))
             }
+            ("cwd", "process") => {
+                let cwd = self.shared_state().net_loop.cwd().to_string();
+                let cwd_val = self.js_mut().slab_add(js::Value::String(cwd));
+                Some((cwd_val, true))
+            }
+            ("chdir", "process") => {
+                let value = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::String(s) => (s.to_owned()),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                self.shared_state_mut().net_loop.chdir(&value);
+                Some((2, true))
+            }
+            ("mkdir", "fs") => {
+                //  name         perms         callback
+                // [(64, true), (493, false), (62, true)];
+                let value = {
+                    match self.js().slab_get(argument_list[0].0).unwrap() {
+                        js::Value::String(s) => (s.to_owned()),
+                        _ => {
+                            return None;
+                        }
+                    }
+                };
+                self.shared_state_mut().net_loop.fs_mkdir(
+                    argument_list[2].0,
+                    value,
+                    argument_list[1].0,
+                );
+                Some((2, true))
+            }
             ("open", "fs") => {
                 let value = {
                     match self.js().slab_get(argument_list[0].0).unwrap() {
@@ -221,6 +256,9 @@ trait ContextHelpers {
                         }
                     }
                 };
+                self.shared_state_mut()
+                    .net_loop
+                    .metadata_by_name(argument_list[1].0, value);
                 // let (address, len) = {
                 //     match self.js().slab_get(argument_list[1].0).unwrap() {
                 //         js::Value::Memory { address, len } => (*address as usize, *len as usize),
@@ -229,8 +267,7 @@ trait ContextHelpers {
                 //         }
                 //     }
                 // };
-                println!("{:?} {:?}", argument_list, value);
-                Some((0, true))
+                Some((2, true))
             }
             ("write", "fs") => {
                 // [

@@ -316,7 +316,8 @@ impl IOLoop {
         self.call_count > 0 || !self.slab.is_empty()
         // TODO: add networking activity
     }
-    pub fn metadata(&mut self, id: i64, name: String) {
+    pub fn metadata_by_name(&mut self, id: i64, name: String) {
+        self.call_count += 1;
         let es = self.event_sender.clone();
         self.runtime
             .spawn(metadata(name).then(move |result| send_result(id, es, result)));
@@ -357,7 +358,7 @@ impl IOLoop {
                 .unwrap(),
         )
     }
-    pub fn fs_mkdir(&mut self, id: i64, path: String) {
+    pub fn fs_mkdir(&mut self, id: i64, path: String, _perms: i64) {
         let es = self.event_sender.clone();
         self.call_count += 1;
         self.runtime.spawn(
@@ -414,9 +415,6 @@ impl IOLoop {
         len: usize,
         seek_from: std::io::SeekFrom,
     ) {
-        if id > 100 {
-            panic!("done");
-        }
         let f = self.files.get(fd).unwrap().try_clone().unwrap();
         let tf = tokio::fs::File::from_std(f);
         let es = self.event_sender.clone();

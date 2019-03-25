@@ -3,6 +3,7 @@ use failure::{err_msg, Error};
 use slab::Slab;
 use std::collections::HashMap;
 use std::i32;
+use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug)]
 pub enum Value {
@@ -116,6 +117,7 @@ impl Js {
         js.add_object(fs, "stat")?;
         js.add_object(fs, "fstat")?;
         js.add_object(fs, "read")?;
+        js.add_object(fs, "mkdir")?;
         js.add_object(fs, "fsync")?;
 
         js.add_object(fs, "isDirectory")?;
@@ -150,7 +152,11 @@ impl Js {
         js.add_object(global, "Uint32Array")?;
         js.add_object(global, "Float32Array")?;
         js.add_object(global, "Float64Array")?;
-        js.add_object(global, "process")?;
+
+        let process = js.add_object(global, "process")?;
+        js.add_object(process, "cwd")?;
+        js.add_object(process, "chdir")?;
+
         js.add_object(global, "net_listener")?;
 
         let wsbi = js.add_object(global, "wasabi")?;
@@ -288,7 +294,7 @@ impl Js {
         };
         Err(err_msg("reflect_set target or property_key doesn't exist"))
     }
-    pub fn add_metadata(&mut self, md: std::fs::Metadata) -> i64 {
+    pub fn add_metadata(&mut self, md: std::fs::Metadata) -> Result<i64, Error> {
         let is_dir = if md.is_dir() {
             self.true_value
         } else {
@@ -298,10 +304,22 @@ impl Js {
             name: "fstat",
             values: HashMap::new(),
         });
-        self.add_object(fstat, "isDirectory").unwrap();
-        self.add_object_value(fstat, "is_dir", (is_dir, true))
-            .unwrap();
-        fstat
+        self.add_object(fstat, "isDirectory")?;
+        self.add_object_value(fstat, "is_dir", (is_dir, true))?;
+        self.add_object_value(fstat, "dev", (md.dev() as i64, false))?;
+        self.add_object_value(fstat, "ino", (md.ino() as i64, false))?;
+        self.add_object_value(fstat, "mode", (i64::from(md.mode()), false))?;
+        self.add_object_value(fstat, "nlink", (md.nlink() as i64, false))?;
+        self.add_object_value(fstat, "uid", (i64::from(md.uid()), false))?;
+        self.add_object_value(fstat, "gid", (i64::from(md.gid()), false))?;
+        self.add_object_value(fstat, "rdev", (md.rdev() as i64, false))?;
+        self.add_object_value(fstat, "size", (md.size() as i64, false))?;
+        self.add_object_value(fstat, "blksize", (md.blksize() as i64, false))?;
+        self.add_object_value(fstat, "blocks", (md.blocks() as i64, false))?;
+        self.add_object_value(fstat, "atimeMs", (md.atime(), false))?;
+        self.add_object_value(fstat, "mtimeMs", (md.mtime(), false))?;
+        self.add_object_value(fstat, "ctimeMs", (md.ctime(), false))?;
+        Ok(fstat)
     }
 }
 
