@@ -14,7 +14,7 @@ func main() {
 	go func() {
 		time.Sleep(time.Second * 2)
 		start := time.Now()
-		for i := 0; i < 1000; i++ {
+		for {
 			if _, err := httpGet("http://localhost:8080/"); err != nil {
 				log.Fatal(err)
 			}

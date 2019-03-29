@@ -840,7 +840,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
     let instance = instantiate_go().expect("Instantiate go");
     context.name_instance("go".to_string(), instance);
     println!(
-        "Instantiation time: {:?}",
+        "Go module instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
     );
 
@@ -850,7 +850,7 @@ pub fn run(args: Vec<String>, compiler: Compiler, data: Vec<u8>) -> Result<(), S
         .map_err(|e| e.to_string())?;
 
     println!(
-        "Instantiation time: {:?}",
+        "Program instantiation time: {:?}",
         instantiate_timer.elapsed().unwrap()
     );
 

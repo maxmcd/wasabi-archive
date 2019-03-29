@@ -33,6 +33,7 @@ pub struct Js {
     slab: Slab<Value>,
     pub static_strings: HashMap<&'static str, &'static str>,
     pub error_not_found: i64,
+    pub error_exists: i64,
     pub true_value: i64,
     pub false_value: i64,
     pub null: i64,
@@ -82,6 +83,7 @@ impl Js {
             slab: Slab::new(),
             static_strings: HashMap::new(),
             error_not_found: 2,
+            error_exists: 2,
             true_value: 2,
             false_value: 2,
             null: 2,
@@ -167,19 +169,26 @@ impl Js {
         // function on the global object to avoid allocating an item
         js.add_object(date, "getTimezoneOffset")?;
 
-        let enoent = js.slab_add(Value::Object {
-            name: "ENOENT",
-            values: HashMap::new(),
-        });
-        let code = js.slab_add(Value::String(String::from("ENOENT")));
-        js.add_object_value(enoent, "code", (code, true))?;
+        // https://github.com/golang/go/blob/master/src/syscall/tables_nacljs.go#L367
+        let enoent = js.add_io_error("ENOENT")?;
         js.error_not_found = enoent;
+        let eexist = js.add_io_error("EEXIST")?;
+        js.error_exists = eexist;
 
         js.global = global;
 
         js.static_strings.insert("is_directory", "is_directory");
 
         Ok(js)
+    }
+    fn add_io_error(&mut self, name: &'static str) -> Result<i64, Error> {
+        let enoent = self.slab_add(Value::Object {
+            name,
+            values: HashMap::new(),
+        });
+        let code = self.slab_add(Value::String(String::from(name)));
+        self.add_object_value(enoent, "code", (code, true))?;
+        Ok(enoent)
     }
     pub fn slab_add(&mut self, v: Value) -> i64 {
         self.slab.insert(v) as i64

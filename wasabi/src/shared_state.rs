@@ -204,15 +204,14 @@ impl SharedState {
                                 .add_array(id, "args", vec![(2, true), ((fd as i64), false)])
                                 .unwrap();
                         }
-                        wasabi_io::Response::Error { id, msg, kind } => match kind {
-                            wasabi_io::ErrorKind::DNSUglySpecialCase => {
-                                let error =
-                                    self.js.slab_add(js::Value::Bytes(msg.as_bytes().to_vec()));
-                                self.js.add_array(id, "args", vec![(error, false)]).unwrap();
+                        wasabi_io::Response::Error { id, kind, .. } => match kind {
+                            std::io::ErrorKind::AlreadyExists => {
+                                let eexist = self.js.error_exists;
+                                self.js.add_array(id, "args", vec![(eexist, true)]).unwrap();
                             }
-                            wasabi_io::ErrorKind::NotFound => {
-                                let enf = self.js.error_not_found;
-                                self.js.add_array(id, "args", vec![(enf, true)]).unwrap();
+                            std::io::ErrorKind::NotFound => {
+                                let enoent = self.js.error_not_found;
+                                self.js.add_array(id, "args", vec![(enoent, true)]).unwrap();
                             }
                             _ => {
                                 println!("unhandled error type {:?}", kind);

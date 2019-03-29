@@ -103,18 +103,11 @@ pub fn addr_to_bytes(addr: SocketAddr, b: &mut [u8]) -> Result<(), Error> {
 }
 
 #[derive(Debug)]
-pub enum ErrorKind {
-    NotFound,
-    DNSUglySpecialCase,
-    Unknown,
-}
-
-#[derive(Debug)]
 pub enum Response {
     Error {
         id: i64,
         msg: String,
-        kind: ErrorKind,
+        kind: std::io::ErrorKind,
     },
     Ips {
         id: i64,
@@ -225,18 +218,13 @@ fn send_result(
     result: Result<impl ToResponse, std::io::Error>,
 ) -> impl Future<Item = (), Error = ()> {
     match result {
-        Err(err) => {
-            let error_kind = match err.kind() {
-                std::io::ErrorKind::NotFound => ErrorKind::NotFound,
-                _ => ErrorKind::Unknown,
-            };
-            es.send(Response::Error {
+        Err(err) => es
+            .send(Response::Error {
                 msg: err.to_string(),
                 id,
-                kind: error_kind,
+                kind: err.kind(),
             })
-            .unwrap()
-        }
+            .unwrap(),
         Ok(tr) => es.send(tr.to_response(id)).unwrap(),
     };
     future::ok(())
@@ -331,7 +319,7 @@ impl IOLoop {
                     Err(err) => es
                         .send(Response::Error {
                             msg: err.to_string(),
-                            kind: ErrorKind::DNSUglySpecialCase,
+                            kind: std::io::ErrorKind::NotFound,
                             id,
                         })
                         .unwrap(),
@@ -424,18 +412,13 @@ impl IOLoop {
                 .and_then(move |(tf, _)| tokio::io::read(tf, vec![0; len]))
                 .then(move |result| {
                     match result {
-                        Err(err) => {
-                            let error_kind = match err.kind() {
-                                std::io::ErrorKind::NotFound => ErrorKind::NotFound,
-                                _ => ErrorKind::Unknown,
-                            };
-                            es.send(Response::Error {
+                        Err(err) => es
+                            .send(Response::Error {
                                 msg: err.to_string(),
                                 id,
-                                kind: error_kind,
+                                kind: err.kind(),
                             })
-                            .unwrap()
-                        }
+                            .unwrap(),
                         Ok((_file, buf, len)) => es
                             .send(Response::Read {
                                 address,
