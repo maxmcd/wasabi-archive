@@ -366,6 +366,12 @@ extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
     fc.shared_state_mut().store_value(sp + 32, result);
 }
 
+extern "C" fn go_js_value_finalize(vmctx: *mut VMContext, sp: i32) {
+    let mut fc = FuncContext::new(vmctx);
+    let reference = fc.shared_state().load_value(sp + 8).0;
+    fc.shared_state_mut().js.slab_remove(reference);
+}
+
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
     let target = fc.shared_state().load_value(sp + 8).0;
@@ -499,13 +505,17 @@ extern "C" fn go_load_bytes(vmctx: *mut VMContext, sp: i32) {
     let addr = fc.mem().get_i32(sp + 16);
     let ln = fc.mem().get_i32(sp + 24);
     let ss = fc.shared_state_mut();
-    let b = match ss.js.slab_get(i64::from(reference)).unwrap() {
-        js::Value::Bytes(ref b) => b,
-        _ => panic!("load_bytes needs bytes"),
-    };
-    ss.mem
-        .mut_mem_slice(addr as usize, (addr + ln) as usize)
-        .clone_from_slice(&b);
+    {
+        let b = match ss.js.slab_get(i64::from(reference)).unwrap() {
+            js::Value::Bytes(ref b) => b,
+            _ => panic!("load_bytes needs bytes"),
+        };
+        ss.mem
+            .mut_mem_slice(addr as usize, (addr + ln) as usize)
+            .clone_from_slice(&b);
+    }
+    // drop them from the slab
+    ss.js.slab_remove(i64::from(reference));
 }
 
 extern "C" fn go_prepare_bytes(vmctx: *mut VMContext, sp: i32) {
@@ -740,6 +750,7 @@ pub fn instantiate_go() -> Result<InstanceHandle, InstantiationError> {
         ("syscall/js.valueGet", go_js_value_get as *const VMFunctionBody),
         ("syscall/js.valueIndex", go_js_value_index as *const VMFunctionBody),
         ("syscall/js.valueInstanceOf", go_debug as *const VMFunctionBody),
+        ("syscall/js.valueFinalize", go_js_value_finalize as *const VMFunctionBody),
         ("syscall/js.valueInvoke", go_js_value_invoke as *const VMFunctionBody),
         ("syscall/js.valueLength", go_js_value_length as *const VMFunctionBody),
         ("syscall/js.valueLoadString", go_js_value_load_string as *const VMFunctionBody),

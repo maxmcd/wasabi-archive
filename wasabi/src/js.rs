@@ -113,7 +113,6 @@ impl Js {
         js.add_object(mem, "buffer")?;
 
         let fs = js.add_object(global, "fs")?;
-        println!("{:?}", fs);
         js.add_object(fs, "write")?;
         js.add_object(fs, "open")?;
         js.add_object(fs, "stat")?;
@@ -193,6 +192,32 @@ impl Js {
     pub fn slab_add(&mut self, v: Value) -> i64 {
         self.slab.insert(v) as i64
     }
+    pub fn slab_remove(&mut self, r: i64) {
+        if r < self.error_exists {
+            return;
+        }
+        let ru = r as usize;
+        if self.slab.contains(ru) {
+            let v = self.slab.remove(ru);
+            match v {
+                Value::Object { values, .. } => {
+                    for (_, v) in values {
+                        if v.1 {
+                            self.slab_remove(v.0)
+                        }
+                    }
+                }
+                Value::Array(values) => {
+                    for v in values {
+                        if v.1 {
+                            self.slab_remove(v.0)
+                        }
+                    }
+                }
+                _ => {}
+            }
+        };
+    }
     pub fn slab_get(&self, r: i64) -> Option<&Value> {
         self.slab.get(r as usize)
     }
@@ -206,10 +231,10 @@ impl Js {
         None
     }
     pub fn add_object(&mut self, r: i64, name: &'static str) -> Result<i64, Error> {
-        let new_r = self.slab.insert(Value::Object {
+        let new_r = self.slab_add(Value::Object {
             name,
             values: HashMap::new(),
-        }) as i64;
+        });
         self.add_object_value(r, name, (new_r, true))?;
         Ok(new_r)
     }
@@ -219,7 +244,7 @@ impl Js {
         name: &'static str,
         args: Vec<(i64, bool)>,
     ) -> Result<i64, Error> {
-        let new_r = self.slab.insert(Value::Array(args)) as i64;
+        let new_r = self.slab_add(Value::Array(args));
         self.add_object_value(r, name, (new_r, true))?;
         Ok(new_r)
     }
