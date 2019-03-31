@@ -1,6 +1,6 @@
 FROM rust
 
-WORKDIR /opt/runtime/
+WORKDIR /opt/
 
 RUN apt-get update \
     && apt-get install -y \
@@ -10,28 +10,26 @@ RUN apt-get update \
 
 RUN rustup install nightly
 
-# Cache the bulk of the dependencies
-RUN mkdir src && touch src/main.rs \
-&& echo \
-'[package] \n\
-name = "runtime" \n\
-version = "0.1.0" \n\
-authors = ["maxmcd <m@xmcd.me>"] \n\
-[dependencies] \n\
-cranelift-codegen = "0.26.0" \n\
-cranelift-native = "0.26.0" \n\
-cranelift-entity = "0.26.0" \n\
-cranelift-wasm = "0.26.0" \n\
-wasmtime-environ = { git = "https://github.com/CraneStation/wasmtime" } \n\
-wasmtime-runtime = { git = "https://github.com/CraneStation/wasmtime" } \n\
-wasmtime-execute = { git = "https://github.com/CraneStation/wasmtime" } \n\
-wasmtime-obj = { git = "https://github.com/CraneStation/wasmtime" } \n\
-wasmtime-wast = { git = "https://github.com/CraneStation/wasmtime" } \n\
-' > Cargo.toml \
-&& cat Cargo.toml && cargo +nightly build --release || true
+RUN mkdir -p /opt/target/
 
-COPY Cargo.lock Cargo.lock
-COPY Cargo.toml Cargo.toml
-RUN cargo +nightly build --release || true && rm src/*.rs
+ENV CARGO_TARGET_DIR=/opt/target
+
+WORKDIR /opt/wasabi-io
+
+COPY ./wasabi-io/Cargo.toml Cargo.toml
+RUN mkdir src && touch src/main.rs && cargo +nightly build --release || true
 
 
+WORKDIR /opt/wasabi
+COPY ./wasabi/Cargo.toml Cargo.toml
+COPY ./wasabi/Cargo.lock Cargo.lock
+RUN mkdir src && touch src/main.rs && cargo +nightly build --release || true
+
+COPY ./wasabi-io/ /opt/wasabi-io
+COPY ./wasabi/ .
+RUN cargo +nightly build --release
+
+
+FROM debian:stretch-slim
+
+COPY --from=0 /opt/target/release/wasabi /bin/wasabi

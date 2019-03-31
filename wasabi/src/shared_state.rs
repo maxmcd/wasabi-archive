@@ -140,9 +140,13 @@ impl SharedState {
                 let mut network_cb_args = Vec::new();
                 for event in events {
                     if event.id().is_some() {
-                        self.js
-                            .add_object_value(event.id().unwrap(), "result", (2, true))
-                            .unwrap();
+                        if let Err(err) =
+                            self.js
+                                .add_object_value(event.id().unwrap(), "result", (2, true))
+                        {
+                            println!("unwrapp error on {:?} {:?}", event, err);
+                            continue;
+                        }
                         self.call_queue.push_back(event.id().unwrap());
                     }
                     match event {

@@ -6,3 +6,7 @@
 *.git
 *node_modules
 wasabi/target
+wasabi-io/target
+**/target
+infra
+**Dockerfile

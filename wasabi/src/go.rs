@@ -368,8 +368,10 @@ extern "C" fn go_js_value_get(vmctx: *mut VMContext, sp: i32) {
 
 extern "C" fn go_js_value_finalize(vmctx: *mut VMContext, sp: i32) {
     let mut fc = FuncContext::new(vmctx);
-    let reference = fc.shared_state().load_value(sp + 8).0;
-    fc.shared_state_mut().js.slab_remove(reference);
+    let reference = fc.shared_state().load_value(sp + 8);
+    if reference.1 {
+        fc.shared_state_mut().js.slab_remove(reference.0);
+    }
 }
 
 extern "C" fn go_js_value_set(vmctx: *mut VMContext, sp: i32) {
