@@ -1,0 +1,7 @@
+version: '3.3'
+
+services:
+  app:
+    image: crccheck/hello-world
+    ports:
+      - 8080:8000
