@@ -123,7 +123,6 @@ func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-
 	return r.res, nil
 }
 
@@ -195,6 +194,13 @@ type responseAndError struct {
 	res *http.Response
 	err error
 }
+
+// func (c *connCloser) Close() error {
+// 	if err := c.ReadCloser.Close(); err != nil {
+// 		return err
+// 	}
+// 	return c.conn.Close()
+// }
 
 type connCloser struct {
 	io.ReadCloser

@@ -5,23 +5,32 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/maxmcd/wasabi"
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	go func() {
 		time.Sleep(time.Second * 2)
 		start := time.Now()
+		// for i := 0; i < 2; i++ {
 		for {
+
 			if _, err := httpGet("http://localhost:8080/"); err != nil {
 				log.Fatal(err)
+			} else {
+				// resp.Body.Close()
+				time.Sleep(time.Millisecond)
 			}
 		}
 		fmt.Println(
 			"Each network request took on average: ",
 			time.Now().Sub(start)/1000)
+		runtime.GC()
 		os.Exit(0)
 	}()
 

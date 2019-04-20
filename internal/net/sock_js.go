@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -413,6 +414,10 @@ func Listen(network, addr string) (net.Listener, error) {
 
 func dialTcp(addr string) (int32, bool)
 
+func finalizer(c *TCPConn) {
+	c.Close()
+}
+
 func Dial(network, addr string) (c net.Conn, err error) {
 	if network != "tcp" {
 		return c, errors.New("tcp is the only protocal supported")
@@ -436,6 +441,7 @@ func Dial(network, addr string) (c net.Conn, err error) {
 		}
 		var c net.Conn
 		c = &TCPConn{token: ref, es: es}
+		runtime.SetFinalizer(c, finalizer)
 		return c, nil
 	}
 	bytes, _ := wasm.GetBytes(ref)
