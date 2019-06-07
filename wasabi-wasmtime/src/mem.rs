@@ -1,5 +1,5 @@
-use bytes::{as_i32_le, as_i64_le, i32_as_u8_le, i64_as_u8_le, u32_as_u8_le};
 use std::{slice, str};
+use wasabi::bytes::{as_i32_le, as_i64_le, i32_as_u8_le, i64_as_u8_le, u32_as_u8_le};
 use wasmtime_runtime::VMMemoryDefinition;
 
 #[derive(Debug)]

@@ -1,0 +1,15 @@
+--2019-05-14 16:40:59--  https://www.twilio.com/console/voice/api/twiml/text-to-speech/media?locale=en-US
+Resolving www.twilio.com (www.twilio.com)... 23.78.212.135
+Connecting to www.twilio.com (www.twilio.com)|23.78.212.135|:443... connected.
+HTTP request sent, awaiting response... 302 Moved Temporarily
+Location: /login?g=%2Fconsole%2Fvoice%2Fapi%2Ftwiml%2Ftext-to-speech%2Fmedia%3Flocale%3Den-US&t=1c96ad2770dd5a8c653dbf7617bce00d00216678b22d2267240d2dcb5c3f714c [following]
+--2019-05-14 16:40:59--  https://www.twilio.com/login?g=%2Fconsole%2Fvoice%2Fapi%2Ftwiml%2Ftext-to-speech%2Fmedia%3Flocale%3Den-US&t=1c96ad2770dd5a8c653dbf7617bce00d00216678b22d2267240d2dcb5c3f714c
+Reusing existing connection to www.twilio.com:443.
+HTTP request sent, awaiting response... 200 OK
+Length: 8733 (8.5K) [text/html]
+Saving to: ‘media?locale=en-US’
+
+media?locale=en-US          0%[                                   ]       0  --.-KB/s               media?locale=en-US        100%[==================================>]   8.53K  --.-KB/s    in 0s      
+
+2019-05-14 16:41:00 (80.9 MB/s) - ‘media?locale=en-US’ saved [8733/8733]
+

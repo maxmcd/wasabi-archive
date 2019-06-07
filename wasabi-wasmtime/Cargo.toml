@@ -1,0 +1,30 @@
+[package]
+name = "wasabi-wasmtime"
+version = "0.0.1"
+authors = ["maxmcd <m@xmcd.me>"]
+
+[dependencies]
+cranelift-codegen = "0.30.0"
+cranelift-entity = "0.30.0"
+cranelift-native = "0.30.0"
+cranelift-wasm = "0.30.0"
+file-per-thread-logger = "0.1.1"
+mio = "0.6"
+slab = "0.4.2"
+rand = "0.6.1"
+target-lexicon = { version = "0.3.0", default-features = false }
+failure = "0.1.5"
+wabt = "0.7"
+wasabi-io = { path = "../wasabi-io" }
+wasabi = { path = "../wasabi" }
+wasmtime-environ = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-jit = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-obj = { git = "https://github.com/cranestation/wasmtime" }
+wasmtime-runtime = { git = "https://github.com/cranestation/wasmtime" }
+# wasmtime-environ = { path = "../../../cranestation/wasmtime/lib/environ" }
+# wasmtime-jit = { path = "../../../cranestation/wasmtime/lib/jit" }
+# wasmtime-obj = { path = "../../../cranestation/wasmtime/lib/obj" }
+# wasmtime-runtime = { path = "../../../cranestation/wasmtime/lib/runtime" }
+
+[profile.release]
+debug = true

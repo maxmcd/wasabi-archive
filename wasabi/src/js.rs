@@ -1,4 +1,4 @@
-use bytes;
+use crate::bytes;
 use failure::{err_msg, Error};
 use slab::Slab;
 use std::collections::HashMap;

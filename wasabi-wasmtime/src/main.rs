@@ -11,7 +11,7 @@
 #![cfg_attr(feature = "clippy", plugin(clippy(conf_file = "../../clippy.toml")))]
 #![cfg_attr(
     feature = "cargo-clippy",
-    allow(clippy::new_without_default, clippy::new_without_default_derive)
+    allow(clippy::new_without_default, clippy::new_without_default)
 )]
 #![cfg_attr(
     feature = "cargo-clippy",
@@ -33,21 +33,17 @@ extern crate cranelift_wasm;
 extern crate failure;
 extern crate file_per_thread_logger;
 extern crate rand;
-extern crate slab;
 extern crate target_lexicon;
 extern crate wabt;
+extern crate wasabi;
 extern crate wasabi_io;
 extern crate wasmtime_environ;
 extern crate wasmtime_jit;
 extern crate wasmtime_runtime;
 
-mod bytes;
 mod go;
-mod js;
 mod mem;
 mod shared_state;
-mod timeout_heap;
-mod util;
 
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;

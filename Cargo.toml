@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "wasabi-io",
+  "wasabi",
+  "wasabi-handler",
+  "wasabi-function",
+  "wasabi-wasmtime",
+]

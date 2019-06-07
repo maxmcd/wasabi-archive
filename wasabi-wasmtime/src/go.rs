@@ -1,11 +1,9 @@
-use bytes::u32_as_u8_le;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::{ir, isa};
 use cranelift_entity::PrimaryMap;
 use cranelift_wasm::DefinedFuncIndex;
 use cranelift_wasm::Memory;
 use failure::Error;
-use js;
 use mem::{Actions, Mem};
 use rand::{thread_rng, Rng};
 use shared_state::SharedState;
@@ -17,7 +15,9 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{slice, str};
 use target_lexicon::HOST;
-use util::epoch_ns;
+use wasabi::bytes::u32_as_u8_le;
+use wasabi::js;
+use wasabi::util::epoch_ns;
 use wasabi_io::addr_to_bytes;
 use wasmtime_environ::MemoryPlan;
 use wasmtime_environ::{translate_signature, Export, MemoryStyle, Module};
@@ -88,7 +88,6 @@ trait ContextHelpers {
     fn value_length(&self, target: i64) -> Option<i64> {
         self.js().value_length(target)
     }
-    // TODO: return Result
     fn reflect_apply(
         &mut self,
         target: i64,
@@ -112,7 +111,7 @@ trait ContextHelpers {
                 Some((0, true))
             }
             ("_makeFuncWrapper", "this") => {
-                let mut js = self.js_mut();
+                let js = self.js_mut();
                 let wf = js.slab_add(js::Value::Object {
                     name: "wrappedFunc",
                     values: HashMap::new(),

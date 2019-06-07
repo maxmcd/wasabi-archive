@@ -1,10 +1,10 @@
-use bytes::i32_as_u8_le;
 use failure::Error;
-use js;
 use mem::{Actions, Mem};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
-use timeout_heap::ToHeap;
+use wasabi::bytes::i32_as_u8_le;
+use wasabi::js;
+use wasabi::timeout_heap::TimeoutHeap;
 use wasabi_io;
 use wasabi_io::IOLoop;
 use wasmtime_runtime::VMMemoryDefinition;
@@ -14,7 +14,7 @@ pub struct SharedState {
     pub exited: bool,
     pub net_loop: IOLoop,
     pub net_callback_id: i64,
-    pub timeout_heap: ToHeap,
+    pub timeout_heap: TimeoutHeap,
     pub call_queue: VecDeque<i64>,
     pub js: js::Js,
     pub mem: Mem,
@@ -23,7 +23,7 @@ pub struct SharedState {
 impl SharedState {
     pub fn new() -> Self {
         Self {
-            timeout_heap: ToHeap::new(),
+            timeout_heap: TimeoutHeap::new(),
             exited: false,
             mem: Mem::new(),
             net_loop: IOLoop::new(),

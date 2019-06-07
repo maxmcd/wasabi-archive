@@ -2,8 +2,8 @@ use slab::Slab;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::util::epoch_ns;
 use std::{thread, time};
-use util::epoch_ns;
 
 #[derive(Debug, Eq)]
 struct Timeout {
@@ -46,21 +46,21 @@ impl PartialEq for Timeout {
     }
 }
 
-#[derive(Debug)]
-pub struct ToHeap {
+#[derive(Debug, Default)]
+pub struct TimeoutHeap {
     heap: BinaryHeap<Timeout>,
     slab: Slab<()>,
     map: HashMap<i32, ()>,
 }
 
-/// ToHeap stores timeouts and returns ids for them. Ids can be reused after
+/// TimeoutHeap stores timeouts and returns ids for them. Ids can be reused after
 /// they are deleted. This struct is a bit of a frankenstein to get around
 /// implemeting a BinaryHeap with deletes. Instead we catch expired items as
 /// they are popped and peeked. This means is_empty is only accurate after a
 /// call to clean_timeouts. It should be easy to dramatically simplify this
 /// implementation
 
-impl ToHeap {
+impl TimeoutHeap {
     pub fn new() -> Self {
         Self {
             heap: BinaryHeap::new(),
@@ -74,6 +74,15 @@ impl ToHeap {
         self.heap.push(Timeout {
             id,
             time: epoch_ns() + millis * 1_000_000,
+        });
+        id
+    }
+    pub fn add_float(&mut self, millis: f64) -> i32 {
+        let id = self.slab.insert(()) as i32;
+        self.map.insert(id, ());
+        self.heap.push(Timeout {
+            id,
+            time: epoch_ns() + (millis * 1_000_000.0).round() as i64,
         });
         id
     }
@@ -133,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_id_reuse() {
-        let mut th = ToHeap::new();
+        let mut th = TimeoutHeap::new();
 
         let id1 = th.add(1);
         th.add(2);
@@ -147,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_pop_expiration() {
-        let mut th = ToHeap::new();
+        let mut th = TimeoutHeap::new();
 
         th.add(2);
         th.add(2);
